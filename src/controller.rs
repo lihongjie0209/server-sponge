@@ -47,6 +47,8 @@ pub struct Controller {
     last_pid_d: f64,
     last_info_time: Instant,
     last_action: String,
+    prev_swap_pct: f64,
+    swap_release_done: bool,
 }
 
 impl Controller {
@@ -77,6 +79,8 @@ impl Controller {
             last_pid_d: 0.0,
             last_info_time: Instant::now(),
             last_action: String::new(),
+            prev_swap_pct: 0.0,
+            swap_release_done: false,
         }
     }
 
@@ -157,10 +161,14 @@ impl Controller {
         }
 
         // ── Step 5: Swap safety check ──
-        if mem.swap_in_use() && mem.swap_usage_percent() > 10.0 {
+        // Only release when swap is actively growing past the threshold (not residual swap).
+        // Once we've released, don't release again until swap drops below threshold and rises back.
+        let swap_pct = mem.swap_usage_percent();
+        let swap_growing = swap_pct > self.prev_swap_pct + 1.0; // growing by >1%
+        if mem.swap_in_use() && swap_pct > 10.0 && swap_growing && !self.swap_release_done {
             warn!(
-                "[MEM] Swap safety triggered: swap={:.1}%, releasing 30% of pool",
-                mem.swap_usage_percent(),
+                "[MEM] Swap safety triggered: swap={:.1}% (was {:.1}%), releasing 30% of pool",
+                swap_pct, self.prev_swap_pct,
             );
             let released = self.pool.release_fraction(0.3);
             debug!(
@@ -171,7 +179,13 @@ impl Controller {
                 self.pool.total_bytes() / (1024 * 1024),
             );
             self.last_action = format!("SWAP_RELEASE({})", released);
+            self.swap_release_done = true;
         }
+        // Reset the flag when swap drops below threshold so it can trigger again next time
+        if swap_pct < 5.0 {
+            self.swap_release_done = false;
+        }
+        self.prev_swap_pct = swap_pct;
 
         debug!(
             "[#{:>5}] ── Cycle complete. Next check in {} ms ──",
