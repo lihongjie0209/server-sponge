@@ -1,4 +1,4 @@
-use log::{debug, info};
+use log::debug;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -65,7 +65,7 @@ impl MemoryPool {
         if to_release > 0 {
             // Force glibc to return memory to OS instead of caching in the allocator
             trim_memory();
-            info!(
+            debug!(
                 "Released {} chunks, pool size: {} chunks ({} MB)",
                 to_release,
                 self.chunks.len(),
@@ -87,7 +87,7 @@ impl MemoryPool {
         self.chunks.clear();
         if count > 0 {
             trim_memory();
-            info!("Released ALL {} chunks (emergency)", count);
+            debug!("Released ALL {} chunks (emergency)", count);
         }
         count
     }

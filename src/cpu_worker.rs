@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::config::Config;
 use crate::cpu_stat::{self, CpuUsage, ProcessCpuSample};
@@ -174,6 +174,7 @@ fn control_loop(
     let cycle = Duration::from_millis(config.cpu_cycle);
     let mut cycle_count: u64 = 0;
     let log_interval = (1000 / config.cpu_cycle).max(1);
+    let mut last_info_time = Instant::now();
 
     thread::sleep(cycle); // first sampling interval
 
@@ -211,10 +212,11 @@ fn control_loop(
         };
 
         let current_duty = f64::from_bits(duty.load(Ordering::Relaxed));
-        let should_log = cycle_count % log_interval == 0;
+        let should_debug_log = cycle_count % log_interval == 0;
+        let should_info_log = last_info_time.elapsed() >= Duration::from_secs(1);
 
-        if should_log {
-            info!(
+        if should_debug_log {
+            debug!(
                 "[CPU #{:>5}] ── Status: total={:.1}%, self={:.1}%, others={:.1}% ({}) | duty={:.1}% | workers={}",
                 cycle_count, usage.total_pct, usage.self_pct, usage.others_pct,
                 if use_cgroup { "cgroup" } else { "procstat" },
@@ -224,13 +226,15 @@ fn control_loop(
 
         // ── Panic check: others already near/above target → full yield ──
         let panic_line = config.cpu_target - config.cpu_panic_margin;
+        let action_label;
         if usage.others_pct > panic_line {
             duty.store(0.0f64.to_bits(), Ordering::Relaxed);
             pid.reset_integral();
-            if should_log {
+            action_label = "YIELD";
+            if should_debug_log {
                 warn!(
-                    "[CPU #{:>5}]    ⚠ YIELD: others={:.1}% > panic_line={:.1}% (target={:.1}% - margin={:.1}%), duty → 0%",
-                    cycle_count, usage.others_pct, panic_line, config.cpu_target, config.cpu_panic_margin,
+                    "[CPU #{:>5}]    ⚠ YIELD: others={:.1}% > panic_line={:.1}%, duty → 0%",
+                    cycle_count, usage.others_pct, panic_line,
                 );
             }
         } else {
@@ -241,13 +245,25 @@ fn control_loop(
             let duty_delta = pid_out.clamped_output / 100.0;
             let new_duty = (current_duty + duty_delta).clamp(0.0, 1.0);
             duty.store(new_duty.to_bits(), Ordering::Relaxed);
+            action_label = "PID";
 
-            if should_log {
-                info!(
+            if should_debug_log {
+                debug!(
                     "[CPU #{:>5}]    PID: {} | duty_delta={:+.3} → new_duty={:.1}%",
                     cycle_count, pid_out, duty_delta, new_duty * 100.0,
                 );
             }
+        }
+
+        // ── Aggregated info log (at most once per second) ──
+        if should_info_log {
+            let d = f64::from_bits(duty.load(Ordering::Relaxed));
+            info!(
+                "[CPU #{:>5}] total={:.1}% self={:.1}% others={:.1}% target={:.1}% duty={:.1}% action={}",
+                cycle_count, usage.total_pct, usage.self_pct, usage.others_pct,
+                config.cpu_target, d * 100.0, action_label,
+            );
+            last_info_time = Instant::now();
         }
 
         prev_proc = curr_proc;

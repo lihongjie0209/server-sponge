@@ -1,5 +1,5 @@
-use log::{info, warn};
-use std::time::Instant;
+use log::{debug, info, warn};
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::memory::MemoryPool;
@@ -45,6 +45,8 @@ pub struct Controller {
     last_pid_p: f64,
     last_pid_i: f64,
     last_pid_d: f64,
+    last_info_time: Instant,
+    last_action: String,
 }
 
 impl Controller {
@@ -73,6 +75,8 @@ impl Controller {
             last_pid_p: 0.0,
             last_pid_i: 0.0,
             last_pid_d: 0.0,
+            last_info_time: Instant::now(),
+            last_action: String::new(),
         }
     }
 
@@ -93,7 +97,7 @@ impl Controller {
         let usage = mem.usage_percent();
         let available = mem.available_percent();
 
-        info!(
+        debug!(
             "[#{:>5}] ── Memory status: total={} MB, used={} MB, avail={} MB (usage={:.1}%, avail={:.1}%) | pool={} chunks ({} MB) | source={}",
             self.cycle_count,
             mem.total / (1024 * 1024),
@@ -109,7 +113,7 @@ impl Controller {
         // ── Step 2: Check PSI pressure ──
         let pressure = if !self.config.no_psi && self.psi.is_available() {
             let p = self.psi.poll(0);
-            info!(
+            debug!(
                 "[#{:>5}]    PSI probe: level={:?}",
                 self.cycle_count, p
             );
@@ -123,22 +127,22 @@ impl Controller {
         self.mode = self.determine_mode(available, pressure);
 
         if self.mode != prev_mode {
+            // Mode transitions are always noteworthy → info
             info!(
-                "[#{:>5}]    Mode transition: {} -> {} (reason: {})",
-                self.cycle_count,
+                "[MEM] Mode transition: {} → {} ({})",
                 prev_mode,
                 self.mode,
                 self.mode_transition_reason(available, pressure),
             );
             if self.mode == Mode::Steady {
-                info!(
+                debug!(
                     "[#{:>5}]    Resetting PID integral accumulator (entering steady mode)",
                     self.cycle_count
                 );
                 self.pid.reset_integral();
             }
         } else {
-            info!(
+            debug!(
                 "[#{:>5}]    Mode: {} (unchanged)",
                 self.cycle_count, self.mode
             );
@@ -155,26 +159,42 @@ impl Controller {
         // ── Step 5: Swap safety check ──
         if mem.swap_in_use() && mem.swap_usage_percent() > 10.0 {
             warn!(
-                "[#{:>5}]    Swap safety: swap usage at {:.1}% (>{:.0}% threshold), proactively releasing 30% of pool",
-                self.cycle_count,
+                "[MEM] Swap safety triggered: swap={:.1}%, releasing 30% of pool",
                 mem.swap_usage_percent(),
-                10.0
             );
             let released = self.pool.release_fraction(0.3);
-            info!(
+            debug!(
                 "[#{:>5}]    Swap safety: released {} chunks, pool now {} chunks ({} MB)",
                 self.cycle_count,
                 released,
                 self.pool.len(),
                 self.pool.total_bytes() / (1024 * 1024),
             );
+            self.last_action = format!("SWAP_RELEASE({})", released);
         }
 
-        info!(
+        debug!(
             "[#{:>5}] ── Cycle complete. Next check in {} ms ──",
             self.cycle_count,
             self.sleep_interval_ms(),
         );
+
+        // ── Aggregated info log (at most once per second) ──
+        if self.last_info_time.elapsed() >= Duration::from_secs(1) {
+            info!(
+                "[MEM #{:>5}] usage={:.1}% target={:.1}% pool={}×{}MB mode={} action={} | avail={} MB pid={:+.1}",
+                self.cycle_count,
+                usage,
+                self.config.target,
+                self.pool.len(),
+                self.config.chunk_size,
+                self.mode,
+                self.last_action,
+                mem.available / (1024 * 1024),
+                self.last_pid_output,
+            );
+            self.last_info_time = Instant::now();
+        }
 
         // Publish metrics to monitoring store
         if let Some(ref m) = self.metrics {
@@ -256,7 +276,7 @@ impl Controller {
         self.last_pid_i = pid_out.i_term;
         self.last_pid_d = pid_out.d_term;
 
-        info!(
+        debug!(
             "[#{:>5}]    PID compute: target={:.1}% - current={:.1}% = {}",
             self.cycle_count, self.config.target, current_usage, pid_out
         );
@@ -269,7 +289,7 @@ impl Controller {
         let chunks_f = pid_out.clamped_output / pct_per_chunk.max(0.1);
         let chunks = chunks_f.round() as i64;
 
-        info!(
+        debug!(
             "[#{:>5}]    Chunk calc: pid_output={:+.2} / pct_per_chunk={:.2}% = {:.2} chunks (rounded={})",
             self.cycle_count, pid_out.clamped_output, pct_per_chunk, chunks_f, chunks
         );
@@ -277,101 +297,96 @@ impl Controller {
         if chunks > 0 {
             let max_alloc = (error / pct_per_chunk.max(0.1)).ceil().max(0.0) as usize;
             let n = (chunks as usize).min(max_alloc).min(5).max(1);
-            info!(
-                "[#{:>5}]    Decision: ALLOCATE {} chunks (wanted={}, max_to_target={}, cap=5) | reason: usage {:.1}% below target {:.1}%",
-                self.cycle_count, n, chunks, max_alloc, current_usage, self.config.target
+            debug!(
+                "[#{:>5}]    Decision: ALLOCATE {} chunks (wanted={}, max_to_target={}, cap=5)",
+                self.cycle_count, n, chunks, max_alloc
             );
             self.pool.allocate_chunks(n);
-            info!(
-                "[#{:>5}]    Pool after: {} chunks ({} MB)",
-                self.cycle_count,
-                self.pool.len(),
-                self.pool.total_bytes() / (1024 * 1024),
-            );
+            self.last_action = format!("ALLOC(+{})", n);
         } else if chunks < 0 {
             let n = ((-chunks) as usize).min(self.pool.len()).min(self.pool.len() / 2 + 1);
             if n > 0 {
-                info!(
-                    "[#{:>5}]    Decision: RELEASE {} chunks (wanted={}, pool_cap={}) | reason: usage {:.1}% above target {:.1}%",
-                    self.cycle_count, n, -chunks, self.pool.len() / 2 + 1, current_usage, self.config.target
+                debug!(
+                    "[#{:>5}]    Decision: RELEASE {} chunks (wanted={}, pool_cap={})",
+                    self.cycle_count, n, -chunks, self.pool.len() / 2 + 1
                 );
                 self.pool.release_chunks(n);
-                info!(
-                    "[#{:>5}]    Pool after: {} chunks ({} MB)",
-                    self.cycle_count,
-                    self.pool.len(),
-                    self.pool.total_bytes() / (1024 * 1024),
-                );
+                self.last_action = format!("RELEASE(-{})", n);
+            } else {
+                self.last_action = "HOLD".into();
             }
         } else {
-            info!(
-                "[#{:>5}]    Decision: HOLD (no change) | reason: usage {:.1}% ≈ target {:.1}% (within tolerance)",
-                self.cycle_count, current_usage, self.config.target
+            debug!(
+                "[#{:>5}]    Decision: HOLD (no change)",
+                self.cycle_count
             );
+            self.last_action = "HOLD".into();
         }
+
+        debug!(
+            "[#{:>5}]    Pool after: {} chunks ({} MB)",
+            self.cycle_count,
+            self.pool.len(),
+            self.pool.total_bytes() / (1024 * 1024),
+        );
     }
 
     fn action_responsive(&mut self) {
         if !self.pool.is_empty() {
             let before = self.pool.len();
             let released = self.pool.release_fraction(0.2);
-            info!(
-                "[#{:>5}]    Decision: RESPONSIVE RELEASE 20% = {} chunks (pool: {} -> {}) | reason: PSI 'some' pressure detected",
+            debug!(
+                "[#{:>5}]    RESPONSIVE RELEASE 20% = {} chunks (pool: {} -> {})",
                 self.cycle_count, released, before, self.pool.len()
             );
+            self.last_action = format!("RESPONSIVE(-{})", released);
         } else {
-            info!(
-                "[#{:>5}]    Decision: HOLD (pool empty, nothing to release) | mode=RESPONSIVE",
+            debug!(
+                "[#{:>5}]    HOLD (pool empty) | mode=RESPONSIVE",
                 self.cycle_count
             );
+            self.last_action = "RESPONSIVE_HOLD".into();
         }
         self.pid.reset_integral();
-        info!(
-            "[#{:>5}]    PID integral reset (responsive mode)",
-            self.cycle_count
-        );
     }
 
     fn action_panic(&mut self) {
         if !self.pool.is_empty() {
             let before = self.pool.len();
             warn!(
-                "[#{:>5}]    ⚠ PANIC: Emergency memory release! Pool has {} chunks ({} MB)",
-                self.cycle_count, before, self.pool.total_bytes() / (1024 * 1024)
+                "[MEM] ⚠ PANIC: Emergency release! pool={} chunks ({} MB)",
+                before, self.pool.total_bytes() / (1024 * 1024)
             );
             let released_80 = self.pool.release_fraction(0.8);
-            warn!(
-                "[#{:>5}]    PANIC phase 1: released 80% = {} chunks, remaining {} chunks",
-                self.cycle_count, released_80, self.pool.len()
-            );
             if self.pool.len() > 0 {
                 let remaining = self.pool.release_all();
-                warn!(
-                    "[#{:>5}]    PANIC phase 2: released remaining {} chunks (pool now empty)",
-                    self.cycle_count, remaining
-                );
+                self.last_action = format!("PANIC(-{})", released_80 + remaining);
+            } else {
+                self.last_action = format!("PANIC(-{})", released_80);
             }
         } else {
-            info!(
-                "[#{:>5}]    PANIC: pool already empty, nothing to release",
+            debug!(
+                "[#{:>5}]    PANIC: pool already empty",
                 self.cycle_count
             );
+            self.last_action = "PANIC(empty)".into();
         }
         self.pid.reset();
         self.cooldown_start = Some(Instant::now());
         self.mode = Mode::Cooldown;
         info!(
-            "[#{:>5}]    Entering COOLDOWN for {}s (PID fully reset)",
-            self.cycle_count, self.config.cooldown
+            "[MEM] Entering COOLDOWN for {}s",
+            self.config.cooldown
         );
     }
 
     fn action_cooldown(&mut self) {
         let elapsed = self.cooldown_start.map(|s| s.elapsed().as_secs()).unwrap_or(0);
-        info!(
-            "[#{:>5}]    Decision: HOLD (cooldown {}/{}s) | reason: no allocations allowed during cooldown",
+        debug!(
+            "[#{:>5}]    HOLD (cooldown {}/{}s)",
             self.cycle_count, elapsed, self.config.cooldown
         );
+        self.last_action = format!("COOLDOWN({}/{}s)", elapsed, self.config.cooldown);
     }
 
     /// Get the current sleep interval based on mode
