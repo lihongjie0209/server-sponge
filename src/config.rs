@@ -1,0 +1,474 @@
+use clap::Args;
+
+#[derive(Args, Debug, Clone)]
+pub struct Config {
+    /// Target system memory usage percentage (0-95)
+    #[arg(long, default_value_t = 70.0)]
+    pub target: f64,
+
+    /// Chunk size in megabytes
+    #[arg(long, default_value_t = 64)]
+    pub chunk_size: usize,
+
+    /// Panic threshold: trigger emergency release when available memory drops below this percentage
+    #[arg(long, default_value_t = 5.0)]
+    pub panic_threshold: f64,
+
+    /// Cooldown period in seconds after panic mode
+    #[arg(long, default_value_t = 30)]
+    pub cooldown: u64,
+
+    /// Disable PSI monitoring (fallback to polling mode)
+    #[arg(long, default_value_t = false)]
+    pub no_psi: bool,
+
+    /// PID proportional gain
+    #[arg(long, default_value_t = 2.0)]
+    pub kp: f64,
+
+    /// PID integral gain
+    #[arg(long, default_value_t = 0.1)]
+    pub ki: f64,
+
+    /// PID derivative gain
+    #[arg(long, default_value_t = 0.5)]
+    pub kd: f64,
+
+    /// Control loop interval in milliseconds (steady mode)
+    #[arg(long, default_value_t = 1000)]
+    pub interval: u64,
+
+    // ── CPU Sponge parameters ──
+
+    /// Target system CPU usage percentage (0 = disabled)
+    #[arg(long, default_value_t = 0.0)]
+    pub cpu_target: f64,
+
+    /// CPU control cycle period in milliseconds
+    #[arg(long, default_value_t = 100)]
+    pub cpu_cycle: u64,
+
+    /// CPU panic margin: yield completely when others > target - margin
+    #[arg(long, default_value_t = 5.0)]
+    pub cpu_panic_margin: f64,
+
+    /// Number of CPU worker threads (0 = auto-detect from nproc/cgroup)
+    #[arg(long, default_value_t = 0)]
+    pub cpu_workers: usize,
+
+    // ── Server parameters ──
+
+    /// Monitoring server port (0 = disabled)
+    #[arg(long, default_value_t = 8080)]
+    pub server_port: u16,
+}
+
+impl Config {
+    pub fn chunk_size_bytes(&self) -> usize {
+        self.chunk_size * 1024 * 1024
+    }
+
+    /// Convert config to CLI argument string for embedding in systemd ExecStart
+    pub fn to_args(&self) -> Vec<String> {
+        let mut args = vec![
+            format!("--target"), format!("{}", self.target),
+            format!("--chunk-size"), format!("{}", self.chunk_size),
+            format!("--panic-threshold"), format!("{}", self.panic_threshold),
+            format!("--cooldown"), format!("{}", self.cooldown),
+            format!("--kp"), format!("{}", self.kp),
+            format!("--ki"), format!("{}", self.ki),
+            format!("--kd"), format!("{}", self.kd),
+            format!("--interval"), format!("{}", self.interval),
+        ];
+        if self.no_psi {
+            args.push("--no-psi".into());
+        }
+        if self.cpu_target > 0.0 {
+            args.extend_from_slice(&[
+                "--cpu-target".into(), format!("{}", self.cpu_target),
+                "--cpu-cycle".into(), format!("{}", self.cpu_cycle),
+                "--cpu-panic-margin".into(), format!("{}", self.cpu_panic_margin),
+            ]);
+            if self.cpu_workers > 0 {
+                args.extend_from_slice(&[
+                    "--cpu-workers".into(), format!("{}", self.cpu_workers),
+                ]);
+            }
+        }
+        if self.server_port != 8080 {
+            args.extend_from_slice(&[
+                "--server-port".into(), format!("{}", self.server_port),
+            ]);
+        }
+        args
+    }
+
+    /// Convert config to a single-line argument string
+    pub fn to_args_string(&self) -> String {
+        self.to_args().join(" ")
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target <= 0.0 || self.target > 95.0 {
+            return Err("target must be between 0 and 95".into());
+        }
+        if self.panic_threshold <= 0.0 || self.panic_threshold >= 50.0 {
+            return Err("panic_threshold must be between 0 and 50".into());
+        }
+        if self.chunk_size == 0 {
+            return Err("chunk_size must be > 0".into());
+        }
+        // CPU validation (only when enabled)
+        if self.cpu_target < 0.0 || self.cpu_target > 95.0 {
+            return Err("cpu_target must be between 0 and 95 (0 to disable)".into());
+        }
+        if self.cpu_target > 0.0 {
+            if self.cpu_cycle < 10 {
+                return Err("cpu_cycle must be >= 10ms".into());
+            }
+            if self.cpu_panic_margin <= 0.0 || self.cpu_panic_margin >= self.cpu_target {
+                return Err("cpu_panic_margin must be > 0 and < cpu_target".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_config() -> Config {
+        Config {
+            target: 70.0,
+            chunk_size: 64,
+            panic_threshold: 5.0,
+            cooldown: 30,
+            no_psi: false,
+            kp: 2.0,
+            ki: 0.1,
+            kd: 0.5,
+            interval: 1000,
+            cpu_target: 0.0,
+            cpu_cycle: 100,
+            cpu_panic_margin: 5.0,
+            cpu_workers: 0,
+            server_port: 8080,
+        }
+    }
+
+    #[test]
+    fn test_default_config_validates() {
+        assert!(default_config().validate().is_ok());
+    }
+
+    #[test]
+    fn test_chunk_size_bytes() {
+        let c = default_config();
+        assert_eq!(c.chunk_size_bytes(), 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_chunk_size_bytes_small() {
+        let mut c = default_config();
+        c.chunk_size = 1;
+        assert_eq!(c.chunk_size_bytes(), 1024 * 1024);
+    }
+
+    // ── target validation ──
+
+    #[test]
+    fn test_target_zero_invalid() {
+        let mut c = default_config();
+        c.target = 0.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_target_negative_invalid() {
+        let mut c = default_config();
+        c.target = -10.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_target_above_95_invalid() {
+        let mut c = default_config();
+        c.target = 96.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_target_95_valid() {
+        let mut c = default_config();
+        c.target = 95.0;
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn test_target_1_valid() {
+        let mut c = default_config();
+        c.target = 1.0;
+        assert!(c.validate().is_ok());
+    }
+
+    // ── panic_threshold validation ──
+
+    #[test]
+    fn test_panic_threshold_zero_invalid() {
+        let mut c = default_config();
+        c.panic_threshold = 0.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_panic_threshold_50_invalid() {
+        let mut c = default_config();
+        c.panic_threshold = 50.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_panic_threshold_negative_invalid() {
+        let mut c = default_config();
+        c.panic_threshold = -1.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_panic_threshold_49_valid() {
+        let mut c = default_config();
+        c.panic_threshold = 49.0;
+        assert!(c.validate().is_ok());
+    }
+
+    // ── chunk_size validation ──
+
+    #[test]
+    fn test_chunk_size_zero_invalid() {
+        let mut c = default_config();
+        c.chunk_size = 0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_chunk_size_1_valid() {
+        let mut c = default_config();
+        c.chunk_size = 1;
+        assert!(c.validate().is_ok());
+    }
+
+    // ── Error messages ──
+
+    #[test]
+    fn test_error_message_target() {
+        let mut c = default_config();
+        c.target = 100.0;
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("target"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_error_message_panic_threshold() {
+        let mut c = default_config();
+        c.panic_threshold = 60.0;
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("panic_threshold"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_error_message_chunk_size() {
+        let mut c = default_config();
+        c.chunk_size = 0;
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("chunk_size"), "error was: {}", err);
+    }
+
+    // ── to_args / to_args_string ──
+
+    #[test]
+    fn test_to_args_string_default() {
+        let c = default_config();
+        let s = c.to_args_string();
+        assert!(s.contains("--target 70"), "got: {}", s);
+        assert!(s.contains("--chunk-size 64"), "got: {}", s);
+        assert!(s.contains("--panic-threshold 5"), "got: {}", s);
+        assert!(s.contains("--cooldown 30"), "got: {}", s);
+        assert!(!s.contains("--no-psi"), "got: {}", s);
+    }
+
+    #[test]
+    fn test_to_args_string_with_no_psi() {
+        let mut c = default_config();
+        c.no_psi = true;
+        let s = c.to_args_string();
+        assert!(s.contains("--no-psi"), "got: {}", s);
+    }
+
+    #[test]
+    fn test_to_args_string_custom_values() {
+        let c = Config {
+            target: 85.0,
+            chunk_size: 128,
+            panic_threshold: 3.0,
+            cooldown: 60,
+            no_psi: false,
+            kp: 1.5,
+            ki: 0.05,
+            kd: 0.8,
+            interval: 2000,
+            cpu_target: 0.0,
+            cpu_cycle: 100,
+            cpu_panic_margin: 5.0,
+            cpu_workers: 0,
+            server_port: 8080,
+        };
+        let s = c.to_args_string();
+        assert!(s.contains("--target 85"), "got: {}", s);
+        assert!(s.contains("--chunk-size 128"), "got: {}", s);
+        assert!(s.contains("--interval 2000"), "got: {}", s);
+        assert!(!s.contains("--cpu-target"), "cpu disabled, got: {}", s);
+    }
+
+    #[test]
+    fn test_to_args_returns_vec() {
+        let c = default_config();
+        let args = c.to_args();
+        assert!(args.contains(&"--target".to_string()));
+        assert!(args.contains(&"70".to_string()));
+    }
+
+    // ── CPU validation ──
+
+    #[test]
+    fn test_cpu_target_zero_valid_means_disabled() {
+        let c = default_config();
+        assert!(c.validate().is_ok());
+        assert_eq!(c.cpu_target, 0.0);
+    }
+
+    #[test]
+    fn test_cpu_target_70_valid() {
+        let mut c = default_config();
+        c.cpu_target = 70.0;
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cpu_target_96_invalid() {
+        let mut c = default_config();
+        c.cpu_target = 96.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_cpu_target_negative_invalid() {
+        let mut c = default_config();
+        c.cpu_target = -5.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_cpu_cycle_too_small() {
+        let mut c = default_config();
+        c.cpu_target = 70.0;
+        c.cpu_cycle = 5; // < 10ms
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_cpu_cycle_10_valid() {
+        let mut c = default_config();
+        c.cpu_target = 70.0;
+        c.cpu_cycle = 10;
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cpu_panic_margin_must_be_positive() {
+        let mut c = default_config();
+        c.cpu_target = 70.0;
+        c.cpu_panic_margin = 0.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_cpu_panic_margin_must_be_less_than_target() {
+        let mut c = default_config();
+        c.cpu_target = 70.0;
+        c.cpu_panic_margin = 70.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_cpu_cycle_not_validated_when_disabled() {
+        let mut c = default_config();
+        c.cpu_target = 0.0;
+        c.cpu_cycle = 1; // would be invalid if enabled
+        assert!(c.validate().is_ok());
+    }
+
+    // ── CPU to_args ──
+
+    #[test]
+    fn test_to_args_includes_cpu_when_enabled() {
+        let mut c = default_config();
+        c.cpu_target = 70.0;
+        c.cpu_cycle = 200;
+        c.cpu_panic_margin = 10.0;
+        let s = c.to_args_string();
+        assert!(s.contains("--cpu-target 70"), "got: {}", s);
+        assert!(s.contains("--cpu-cycle 200"), "got: {}", s);
+        assert!(s.contains("--cpu-panic-margin 10"), "got: {}", s);
+    }
+
+    #[test]
+    fn test_to_args_excludes_cpu_when_disabled() {
+        let c = default_config(); // cpu_target=0
+        let s = c.to_args_string();
+        assert!(!s.contains("--cpu-target"), "got: {}", s);
+    }
+
+    #[test]
+    fn test_to_args_includes_cpu_workers_when_set() {
+        let mut c = default_config();
+        c.cpu_target = 70.0;
+        c.cpu_workers = 4;
+        let s = c.to_args_string();
+        assert!(s.contains("--cpu-workers 4"), "got: {}", s);
+    }
+
+    #[test]
+    fn test_to_args_excludes_cpu_workers_when_auto() {
+        let mut c = default_config();
+        c.cpu_target = 70.0;
+        c.cpu_workers = 0;
+        let s = c.to_args_string();
+        assert!(!s.contains("--cpu-workers"), "got: {}", s);
+    }
+
+    // ── server_port to_args ──
+
+    #[test]
+    fn test_to_args_excludes_default_server_port() {
+        let c = default_config(); // server_port=8080 (default)
+        let s = c.to_args_string();
+        assert!(!s.contains("--server-port"), "default should be omitted, got: {}", s);
+    }
+
+    #[test]
+    fn test_to_args_includes_custom_server_port() {
+        let mut c = default_config();
+        c.server_port = 9090;
+        let s = c.to_args_string();
+        assert!(s.contains("--server-port 9090"), "got: {}", s);
+    }
+
+    #[test]
+    fn test_to_args_includes_zero_server_port() {
+        let mut c = default_config();
+        c.server_port = 0;
+        let s = c.to_args_string();
+        assert!(s.contains("--server-port 0"), "got: {}", s);
+    }
+}

@@ -1,0 +1,28 @@
+services:
+  sponge:
+    build: .
+    container_name: server-sponge
+    mem_limit: 512m
+    memswap_limit: 512m
+    # Required for PSI access
+    privileged: true
+    ports:
+      - "8080:8080"
+    # Pass custom arguments
+    command: ["run", "--target", "70", "--chunk-size", "16", "--panic-threshold", "5", "--cooldown", "30", "--cpu-target", "70", "--cpu-workers", "2", "--server-port", "8080"]
+    environment:
+      - RUST_LOG=info
+
+  # Stress test service — start manually with: docker compose run stress
+  stress:
+    image: debian:bookworm-slim
+    container_name: sponge-stress
+    mem_limit: 512m
+    memswap_limit: 512m
+    privileged: true
+    network_mode: "service:sponge"
+    pid: "service:sponge"
+    entrypoint: ["bash", "-c"]
+    command: ["apt-get update -qq && apt-get install -y -qq stress-ng > /dev/null 2>&1 && echo 'Starting stress test...' && stress-ng --vm 2 --vm-bytes 200M --timeout 30s --verbose"]
+    profiles:
+      - test

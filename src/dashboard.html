@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Server Sponge 实时监控</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+:root {
+  --bg: #0f172a; --card: #1e293b; --border: #334155;
+  --text: #e2e8f0; --muted: #94a3b8;
+  --blue: #3b82f6; --cyan: #06b6d4; --orange: #f59e0b;
+  --green: #22c55e; --red: #ef4444; --yellow: #eab308; --purple: #a855f7;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg); color: var(--text); min-height: 100vh; }
+
+header { display:flex; justify-content:space-between; align-items:center;
+  padding:12px 24px; background:var(--card); border-bottom:1px solid var(--border); }
+header h1 { font-size:1.25rem; }
+.hdr-right { display:flex; align-items:center; gap:16px; }
+#sys-info { color:var(--muted); font-size:.8rem; }
+.badge { display:inline-flex; align-items:center; gap:6px; padding:3px 10px;
+  border-radius:9999px; font-size:.75rem; font-weight:500; }
+.badge.ok { background:rgba(34,197,94,.12); color:var(--green); }
+.badge.err { background:rgba(239,68,68,.12); color:var(--red); }
+.dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+.badge.ok .dot { background:var(--green); } .badge.err .dot { background:var(--red); }
+
+main { padding:16px 24px; max-width:1440px; margin:0 auto; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+.card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px; }
+.card h2 { font-size:.85rem; color:var(--muted); margin-bottom:10px; }
+.chart-wrap { position:relative; height:220px; }
+
+.stats { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:12px; }
+.stat { background:var(--card); border:1px solid var(--border); border-radius:10px;
+  padding:12px; text-align:center; }
+.stat .lbl { font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+.stat .val { font-size:1.3rem; font-weight:700; margin-top:2px; font-variant-numeric:tabular-nums; }
+.mode-steady { color:var(--green); } .mode-responsive { color:var(--yellow); }
+.mode-panic { color:var(--red); } .mode-cooldown { color:var(--cyan); }
+
+.stress-bar { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; }
+.sg { display:flex; gap:6px; align-items:flex-end; }
+.ig { display:flex; flex-direction:column; gap:2px; }
+.ig label { font-size:.65rem; color:var(--muted); }
+.ig input { background:var(--bg); border:1px solid var(--border); border-radius:5px;
+  color:var(--text); padding:5px 8px; width:64px; font-size:.8rem; }
+button { border:none; border-radius:5px; padding:6px 14px; cursor:pointer;
+  font-size:.8rem; font-weight:500; transition:opacity .15s; color:#fff; }
+button:hover { opacity:.82; }
+.btn-go { background:var(--green); } .btn-stop { background:var(--red); }
+.btn-stopall { background:var(--red); }
+#stress-tag { font-size:.8rem; padding:4px 10px; border-radius:5px; background:var(--bg); margin-left:auto; }
+
+.logbox { max-height:300px; overflow-y:auto; font-family:'JetBrains Mono','Fira Code','Cascadia Code',monospace;
+  font-size:.7rem; line-height:1.6; background:var(--bg); border-radius:6px; padding:10px; }
+.logbox .ev { padding:1px 0; white-space:pre-wrap; word-break:break-all; }
+.logbox .ts { color:var(--muted); } .logbox .l-info { color:var(--blue); }
+.logbox .l-warn { color:var(--yellow); } .logbox .l-error { color:var(--red); }
+.logbox .l-debug { color:var(--purple); }
+.log-toolbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.log-toolbar button { padding:3px 10px; font-size:.7rem; background:var(--border); }
+
+@media(max-width:900px) { .grid2{grid-template-columns:1fr;} .stats{grid-template-columns:repeat(3,1fr);} }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧽 Server Sponge 实时监控</h1>
+  <div class="hdr-right">
+    <span id="sys-info"></span>
+    <span id="conn" class="badge err"><span class="dot"></span><span id="conn-txt">连接中…</span></span>
+  </div>
+</header>
+<main>
+  <div class="grid2">
+    <div class="card"><h2>📈 内存使用率</h2><div class="chart-wrap"><canvas id="memC"></canvas></div></div>
+    <div class="card"><h2>📈 CPU 使用率</h2><div class="chart-wrap"><canvas id="cpuC"></canvas></div></div>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="lbl">内存模式</div><div class="val" id="s-mode">—</div></div>
+    <div class="stat"><div class="lbl">内存池</div><div class="val" id="s-pool">—</div></div>
+    <div class="stat"><div class="lbl">可用内存</div><div class="val" id="s-avail">—</div></div>
+    <div class="stat"><div class="lbl">CPU 占空比</div><div class="val" id="s-duty">—</div></div>
+    <div class="stat"><div class="lbl">Sponge CPU</div><div class="val" id="s-self-cpu">—</div></div>
+    <div class="stat"><div class="lbl">PID 输出</div><div class="val" id="s-pid">—</div></div>
+    <div class="stat"><div class="lbl">运行时间</div><div class="val" id="s-up">—</div></div>
+  </div>
+  <div class="card" style="margin-bottom:12px;">
+    <h2>🔥 压力模拟 (stress-ng)</h2>
+    <div class="stress-bar">
+      <div class="sg">
+        <div class="ig"><label>CPU 线程</label><input type="number" id="i-cpu-w" value="1" min="1" max="64"></div>
+        <div class="ig"><label>负载 %</label><input type="number" id="i-cpu-l" value="80" min="1" max="100"></div>
+        <div class="ig"><label>超时 (秒)</label><input type="number" id="i-cpu-t" value="60" min="0"></div>
+        <button class="btn-go" onclick="stressAct('cpu','start')">启动 CPU</button>
+        <button class="btn-stop" onclick="stressAct('cpu','stop')">停止</button>
+      </div>
+      <div class="sg">
+        <div class="ig"><label>内存 (MB)</label><input type="number" id="i-mem-m" value="100" min="1" max="10000"></div>
+        <div class="ig"><label>超时 (秒)</label><input type="number" id="i-mem-t" value="60" min="0"></div>
+        <button class="btn-go" onclick="stressAct('mem','start')">启动内存</button>
+        <button class="btn-stop" onclick="stressAct('mem','stop')">停止</button>
+      </div>
+      <button class="btn-stopall" onclick="stressAct('all','stop')">⏹ 全部停止</button>
+      <span id="stress-tag">🟢 无压力</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="log-toolbar">
+      <h2 style="margin:0;">📋 实时日志</h2>
+      <div><label style="font-size:.7rem;color:var(--muted);margin-right:6px;">自动滚动</label>
+        <input type="checkbox" id="auto-scroll" checked>
+        <button onclick="clearLog()">清空</button>
+      </div>
+    </div>
+    <div class="logbox" id="log"></div>
+  </div>
+</main>
+<script>
+const MP = 120, g = s => document.getElementById(s);
+const CS = getComputedStyle(document.documentElement);
+const C = k => CS.getPropertyValue('--'+k).trim();
+
+function mkChart(id, datasets, yMax) {
+  return new Chart(g(id), { type:'line', data:{labels:[], datasets},
+    options:{ responsive:true, maintainAspectRatio:false, animation:{duration:0},
+      interaction:{mode:'index',intersect:false},
+      scales:{ x:{display:false}, y:{min:0, max:yMax, ticks:{color:C('muted'),font:{size:10}},
+        grid:{color:'rgba(51,65,85,.4)'}} },
+      plugins:{legend:{labels:{color:C('muted'),boxWidth:12,font:{size:11}}}} } });
+}
+function ds(label,color,dash,fill){return{label,data:[],borderColor:color,backgroundColor:fill||'transparent',
+  borderWidth:dash?1:1.5,borderDash:dash||[],pointRadius:0,tension:.3,fill:!!fill};}
+
+const memChart = mkChart('memC',[
+  ds('系统使用率',C('blue')),
+  ds('目标',C('muted'),[6,3]),
+  ds('Sponge 占比',C('cyan'),null,'rgba(6,182,212,.12)'),
+], 100);
+
+const cpuChart = mkChart('cpuC',[
+  ds('总使用率',C('orange')),
+  ds('Sponge',C('cyan'),null,'rgba(6,182,212,.12)'),
+  ds('其他进程',C('yellow')),
+  ds('占空比',C('green')),
+  ds('目标',C('muted'),[6,3]),
+], 100);
+
+function pushPt(chart, label, vals) {
+  chart.data.labels.push(label);
+  vals.forEach((v,i) => chart.data.datasets[i].data.push(v));
+  if (chart.data.labels.length > MP) {
+    chart.data.labels.shift();
+    chart.data.datasets.forEach(d => d.data.shift());
+  }
+  chart.update('none');
+}
+
+const logEl = g('log');
+function appendLog(entry) {
+  const d = new Date(entry.timestamp);
+  const t = d.toTimeString().slice(0,8) + '.' + String(d.getMilliseconds()).padStart(3,'0');
+  const lc = entry.level==='warn'?'l-warn':entry.level==='error'?'l-error':
+             entry.level==='debug'?'l-debug':'l-info';
+  const div = document.createElement('div');
+  div.className = 'ev';
+  div.innerHTML = '<span class="ts">'+t+'</span> <span class="'+lc+'">['+entry.level.toUpperCase().padEnd(5)+']</span> '+esc(entry.message);
+  logEl.appendChild(div);
+  while (logEl.children.length > 600) logEl.removeChild(logEl.firstChild);
+  if (g('auto-scroll').checked) logEl.scrollTop = logEl.scrollHeight;
+}
+function clearLog() { logEl.innerHTML = ''; }
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+function fmtDur(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=s%60;
+  return h?h+'h'+m+'m':m+'m'+sec+'s';}
+function modeClass(m){
+  const ml=(m||'').toLowerCase();
+  if(ml==='steady')return'mode-steady';if(ml==='responsive')return'mode-responsive';
+  if(ml==='panic')return'mode-panic';if(ml==='cooldown')return'mode-cooldown';return'';
+}
+
+let memTarget=70, cpuTarget=0;
+
+function onData(d) {
+  const now = new Date(d.timestamp*1000).toTimeString().slice(0,8);
+  const mem = d.memory, cpu = d.cpu, st = d.stress;
+
+  // Update targets from server
+  if(d.mem_target>0) memTarget=d.mem_target;
+  if(d.cpu_target>0) cpuTarget=d.cpu_target;
+
+  const poolPct = mem.total_mb>0 ? (mem.pool_mb/mem.total_mb*100) : 0;
+  pushPt(memChart, now, [mem.usage_pct, memTarget, poolPct]);
+  pushPt(cpuChart, now, [cpu.total_pct, cpu.self_pct, cpu.others_pct, cpu.duty_cycle*100, cpuTarget]);
+
+  const mEl = g('s-mode'); mEl.textContent = mem.mode||'—'; mEl.className='val '+modeClass(mem.mode);
+  g('s-pool').textContent = mem.pool_chunks>0?mem.pool_chunks+' ('+Math.round(mem.pool_mb)+'MB)':'0';
+  g('s-avail').textContent = mem.total_mb>0?Math.round(mem.available_mb)+'MB':'—';
+  g('s-duty').textContent = cpu.workers>0?(cpu.duty_cycle*100).toFixed(1)+'%':'N/A';
+  g('s-self-cpu').textContent = cpu.self_pct>0?cpu.self_pct.toFixed(1)+'%':'0%';
+  g('s-pid').textContent = mem.pid_output!==0?mem.pid_output.toFixed(2):'0';
+  g('s-up').textContent = fmtDur(d.uptime_secs);
+
+  if(mem.total_mb>0){
+    g('sys-info').textContent = 'RAM: '+Math.round(mem.total_mb)+'MB | Workers: '+(cpu.workers||0);
+  }
+
+  // Stress tag
+  var parts=[];
+  if(st.cpu_active) parts.push('CPU\u00d7'+st.cpu_threads+'@'+st.cpu_load+'%');
+  if(st.mem_active) parts.push('MEM '+st.mem_mb+'MB');
+  g('stress-tag').textContent = parts.length ? '\ud83d\udd34 '+parts.join(' + ') : '\ud83d\udfe2 \u65e0\u538b\u529b';
+
+  // Incremental logs
+  if(d.logs && d.logs.length > 0) {
+    for(var i=0;i<d.logs.length;i++) appendLog(d.logs[i]);
+  }
+}
+
+// SSE
+var sse;
+function connect() {
+  sse = new EventSource('/api/events');
+  sse.onopen = function() {
+    g('conn').className='badge ok'; g('conn-txt').textContent='\u5df2\u8fde\u63a5';
+  };
+  sse.onmessage = function(e) { try{onData(JSON.parse(e.data));}catch(ex){console.error(ex);} };
+  sse.onerror = function() {
+    g('conn').className='badge err'; g('conn-txt').textContent='\u5df2\u65ad\u5f00';
+    sse.close(); setTimeout(connect, 2000);
+  };
+}
+connect();
+
+// Stress API
+function stressAct(type, action) {
+  var url, body;
+  if (action==='stop' && type==='all') { url='/api/stress/stop'; body={}; }
+  else if (type==='cpu' && action==='start') {
+    url='/api/stress/cpu/start';
+    body={workers:+g('i-cpu-w').value, load:+g('i-cpu-l').value, timeout:+g('i-cpu-t').value};
+  }
+  else if (type==='cpu' && action==='stop') { url='/api/stress/cpu/stop'; body={}; }
+  else if (type==='mem' && action==='start') {
+    url='/api/stress/mem/start';
+    body={mb:+g('i-mem-m').value, timeout:+g('i-mem-t').value};
+  }
+  else if (type==='mem' && action==='stop') { url='/api/stress/mem/stop'; body={}; }
+  else return;
+  fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    .catch(function(e){ console.error('stress API error', e); });
+}
+</script>
+</body>
+</html>
