@@ -116,7 +116,7 @@ fn set_sched_idle() {
     {
         const SCHED_IDLE: libc::c_int = 5;
         unsafe {
-            let param = libc::sched_param { sched_priority: 0 };
+            let param: libc::sched_param = std::mem::zeroed();
             let ret = libc::sched_setscheduler(0, SCHED_IDLE, &param);
             if ret != 0 {
                 warn!(

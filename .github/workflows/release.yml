@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  GLIBC_VERSION: "2.28"
+
 jobs:
   build:
     strategy:
@@ -19,6 +22,12 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: server-sponge-linux-arm64
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact: server-sponge-linux-amd64-musl
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact: server-sponge-linux-arm64-musl
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,24 +36,65 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools (aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
 
-      - name: Build
+      - name: Build (glibc ${{ env.GLIBC_VERSION }} compatible)
+        if: ${{ !endsWith(matrix.target, '-musl') }}
         run: |
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-          fi
-          cargo build --release --target ${{ matrix.target }}
+          cargo zigbuild --release --target ${{ matrix.target }}.${{ env.GLIBC_VERSION }}
+
+      - name: Build (musl static)
+        if: ${{ endsWith(matrix.target, '-musl') }}
+        run: |
+          cargo zigbuild --release --target ${{ matrix.target }}
 
       - name: Package
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/server-sponge dist/${{ matrix.artifact }}
-          chmod +x dist/${{ matrix.artifact }}
+          if ${{ endsWith(matrix.target, '-musl') }}; then
+            SRC="target/${{ matrix.target }}/release/server-sponge"
+          else
+            SRC="target/${{ matrix.target }}.${{ env.GLIBC_VERSION }}/release/server-sponge"
+          fi
+          cp "$SRC" "dist/${{ matrix.artifact }}"
+          chmod +x "dist/${{ matrix.artifact }}"
+
+      - name: Verify glibc compatibility
+        if: ${{ !endsWith(matrix.target, '-musl') }}
+        run: |
+          echo "=== GLIBC symbol versions in binary ==="
+          strings dist/${{ matrix.artifact }} | grep -E '^GLIBC_[0-9]+\.[0-9]+$' | sort -V | uniq
+          MAX=$(strings dist/${{ matrix.artifact }} | grep -E '^GLIBC_[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          echo "Max required: $MAX"
+          if [ -n "$MAX" ] && echo "$MAX" | grep -q "GLIBC"; then
+            VER=$(echo "$MAX" | sed 's/GLIBC_//')
+            HIGHER=$(echo -e "$VER\n${{ env.GLIBC_VERSION }}" | sort -V | tail -1)
+            if [ "$HIGHER" != "${{ env.GLIBC_VERSION }}" ]; then
+              echo "❌ ERROR: Binary requires glibc $VER > target ${{ env.GLIBC_VERSION }}"
+              exit 1
+            fi
+            echo "✅ Binary requires glibc <= ${{ env.GLIBC_VERSION }}"
+          fi
+
+      - name: Verify fully static (musl)
+        if: ${{ endsWith(matrix.target, '-musl') }}
+        run: |
+          BIN="dist/${{ matrix.artifact }}"
+          echo "=== File type ==="
+          file "$BIN"
+          echo "=== Dynamic dependencies ==="
+          ldd "$BIN" 2>&1 || true
+          echo "=== GLIBC symbols ==="
+          SYMS=$(strings "$BIN" | grep -E '^GLIBC_' | sort -V)
+          if [ -n "$SYMS" ]; then
+            echo "❌ Found GLIBC symbols:"
+            echo "$SYMS"
+            exit 1
+          else
+            echo "✅ No GLIBC symbols — fully static"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

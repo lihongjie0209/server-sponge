@@ -93,10 +93,19 @@ impl MemoryPool {
     }
 }
 
-/// Call glibc's malloc_trim to return freed memory to the OS.
+/// Return freed memory to the OS (best-effort, allocator-specific).
+///
+/// On glibc: calls malloc_trim(0) to reclaim cached free pages.
+/// On musl: large allocations (>= 128 KB) are backed by mmap and returned
+/// to the OS via munmap on free — no explicit trim is needed.
 fn trim_memory() {
+    #[cfg(target_env = "gnu")]
     unsafe {
         libc::malloc_trim(0);
+    }
+    #[cfg(target_env = "musl")]
+    {
+        let _ = 0; // not needed — mmap'd allocations are unmapped on free
     }
 }
 
