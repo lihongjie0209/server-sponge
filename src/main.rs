@@ -83,7 +83,38 @@ fn main() {
     }
 
     match cli.command {
-        Commands::Run(config) => run_sponge(config),
+        Commands::Run(mut config) => {
+            // If --config was specified, load file as base then apply CLI overrides
+            if let Some(ref config_path) = config.config.clone() {
+                match std::fs::read_to_string(config_path) {
+                    Ok(content) => {
+                        match toml::from_str::<Config>(&content) {
+                            Ok(file_config) => {
+                                // Start with file values, then apply CLI overrides on top
+                                let mut merged = file_config;
+                                merged.config = config.config.clone();
+                                merged.apply_cli_overrides(&config);
+                                config = merged;
+                                // Re-validate with merged config
+                                if let Err(e) = config.validate() {
+                                    error!("Configuration invalid: {}", e);
+                                    std::process::exit(1);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to parse config file '{}': {}", config_path, e);
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Cannot read config file '{}': {}", config_path, e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            run_sponge(config);
+        }
         Commands::Install { config, bin_path, start } => {
             if let Err(e) = config.validate() {
                 eprintln!("配置校验失败: {}", e);

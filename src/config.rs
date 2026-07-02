@@ -1,7 +1,13 @@
 use clap::Args;
+use serde::Deserialize;
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct Config {
+    /// Path to TOML configuration file (CLI args override file values)
+    #[arg(long)]
+    pub config: Option<String>,
+
     /// Target system memory usage percentage (0 = disable memory occupation)
     #[arg(long, default_value_t = 70.0)]
     pub target: f64,
@@ -81,6 +87,33 @@ pub struct Config {
     pub server_port: u16,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        // Matches clap defaults. Used as the base when merging TOML file + CLI args.
+        Self {
+            config: None,
+            target: 70.0,
+            chunk_size: 64,
+            panic_threshold: 5.0,
+            cooldown: 30,
+            no_psi: false,
+            kp: 2.0,
+            ki: 0.1,
+            kd: 0.5,
+            interval: 1000,
+            log_dir: String::new(),
+            log_retention: 7,
+            log_compress: true,
+            dry_run: false,
+            cpu_target: 0.0,
+            cpu_cycle: 100,
+            cpu_panic_margin: 5.0,
+            cpu_workers: 0,
+            server_port: 0,
+        }
+    }
+}
+
 impl Config {
     pub fn chunk_size_bytes(&self) -> usize {
         self.chunk_size * 1024 * 1024
@@ -124,6 +157,46 @@ impl Config {
     /// Convert config to a single-line argument string
     pub fn to_args_string(&self) -> String {
         self.to_args().join(" ")
+    }
+
+    /// Merge CLI overrides on top of file-loaded config.
+    /// Any CLI field that differs from the system default takes precedence.
+    pub fn apply_cli_overrides(&mut self, cli: &Config) {
+        let default = Config::default();
+
+        // Only override if the CLI value is explicitly set (differs from default)
+        macro_rules! override_if_set {
+            ($field:ident) => {
+                if cli.$field != default.$field {
+                    self.$field = cli.$field.clone();
+                }
+            };
+            (f64 $field:ident) => {
+                // f64 equality is exact here — comparing parsed CLI value vs default literal
+                if cli.$field != default.$field {
+                    self.$field = cli.$field;
+                }
+            };
+        }
+
+        override_if_set!(f64 target);
+        override_if_set!(chunk_size);
+        override_if_set!(f64 panic_threshold);
+        override_if_set!(cooldown);
+        override_if_set!(no_psi);
+        override_if_set!(f64 kp);
+        override_if_set!(f64 ki);
+        override_if_set!(f64 kd);
+        override_if_set!(interval);
+        override_if_set!(log_dir);
+        override_if_set!(log_retention);
+        override_if_set!(log_compress);
+        override_if_set!(dry_run);
+        override_if_set!(f64 cpu_target);
+        override_if_set!(cpu_cycle);
+        override_if_set!(f64 cpu_panic_margin);
+        override_if_set!(cpu_workers);
+        override_if_set!(server_port);
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -173,6 +246,7 @@ mod tests {
             log_retention: 7,
             log_compress: true,
             dry_run: false,
+            config: None,
             cpu_target: 0.0,
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,
@@ -346,6 +420,7 @@ mod tests {
             log_retention: 7,
             log_compress: true,
             dry_run: false,
+            config: None,
             cpu_target: 0.0,
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,
