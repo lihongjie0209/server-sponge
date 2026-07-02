@@ -37,20 +37,28 @@ jobs:
           cargo zigbuild --release --target x86_64-unknown-linux-gnu.${{ env.GLIBC_VERSION }}
       - name: Verify glibc compatibility
         run: |
-          BIN="target/x86_64-unknown-linux-gnu.${{ env.GLIBC_VERSION }}/release/server-sponge"
+          # zigbuild strips the .<version> suffix from the cargo output path
+          BIN="target/x86_64-unknown-linux-gnu/release/server-sponge"
+          if [ ! -f "$BIN" ]; then
+            echo "❌ Binary not found at $BIN"
+            ls -la target/x86_64-unknown-linux-gnu/release/ 2>/dev/null || echo "(dir not found)"
+            exit 1
+          fi
           echo "=== GLIBC symbol versions in binary ==="
           strings "$BIN" | grep -E '^GLIBC_[0-9]+\.[0-9]+$' | sort -V | uniq
           MAX=$(strings "$BIN" | grep -E '^GLIBC_[0-9]+\.[0-9]+$' | sort -V | tail -1)
           echo "Max required: $MAX"
-          if [ -n "$MAX" ] && echo "$MAX" | grep -q "GLIBC"; then
-            VER=$(echo "$MAX" | sed 's/GLIBC_//')
-            HIGHER=$(echo -e "$VER\n${{ env.GLIBC_VERSION }}" | sort -V | tail -1)
-            if [ "$HIGHER" != "${{ env.GLIBC_VERSION }}" ]; then
-              echo "❌ ERROR: Binary requires glibc $VER > target ${{ env.GLIBC_VERSION }}"
-              exit 1
-            fi
-            echo "✅ Binary requires glibc <= ${{ env.GLIBC_VERSION }}"
+          if [ -z "$MAX" ]; then
+            echo "❌ No GLIBC symbols found — binary may not be dynamically linked"
+            exit 1
           fi
+          VER=$(echo "$MAX" | sed 's/GLIBC_//')
+          HIGHER=$(echo -e "$VER\n${{ env.GLIBC_VERSION }}" | sort -V | tail -1)
+          if [ "$HIGHER" != "${{ env.GLIBC_VERSION }}" ]; then
+            echo "❌ ERROR: Binary requires glibc $VER > target ${{ env.GLIBC_VERSION }}"
+            exit 1
+          fi
+          echo "✅ Binary requires glibc <= ${{ env.GLIBC_VERSION }}"
 
   musl:
     runs-on: ubuntu-latest
