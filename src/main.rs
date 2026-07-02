@@ -192,6 +192,7 @@ fn print_dry_run_plan(config: &Config) {
         let _ = writeln!(out, "  PSI          : {}", if config.no_psi { "disabled" } else { "enabled" });
         let _ = writeln!(out, "  Panic        : {}% available memory threshold", config.panic_threshold);
         let _ = writeln!(out, "  Cooldown     : {}s after panic", config.cooldown);
+        let _ = writeln!(out, "  HugePages    : {}", if config.hugepages { "enabled" } else { "disabled" });
     } else {
         let _ = writeln!(out,  "  Disabled (--target 0)");
     }
@@ -242,10 +243,23 @@ fn print_dry_run_plan(config: &Config) {
     let _ = writeln!(out, "═══════════════════════════════════════════\n");
 }
 
-fn run_sponge(config: Config) {
+fn run_sponge(mut config: Config) {
     if let Err(e) = config.validate() {
         error!("Invalid configuration: {}", e);
         std::process::exit(1);
+    }
+
+    // Auto chunk size: if user didn't explicitly set chunk_size (=default 64),
+    // calculate based on system memory for better granularity on small systems.
+    // This runs before dry-run so the plan shows the actual size that would be used.
+    if config.chunk_size == 64 {
+        if let Ok(mem) = crate::sysinfo::get_memory_info() {
+            let total_mb = mem.total / (1024 * 1024);
+            let auto = crate::memory::auto_chunk_size_mb(total_mb);
+            if auto != config.chunk_size {
+                config.chunk_size = auto;
+            }
+        }
     }
 
     // Dry-run: print plan and exit without touching system resources
@@ -253,6 +267,9 @@ fn run_sponge(config: Config) {
         print_dry_run_plan(&config);
         return;
     }
+
+    // Log the resolved chunk size
+    info!("Using chunk size: {} MB", config.chunk_size);
 
     // Lower resource priority to protect other services on the system
     lower_process_priority();

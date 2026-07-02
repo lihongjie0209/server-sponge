@@ -53,7 +53,7 @@ pub struct Controller {
 
 impl Controller {
     pub fn new(config: Config, metrics: Option<MetricsStore>) -> Self {
-        let pool = MemoryPool::new(config.chunk_size_bytes());
+        let pool = MemoryPool::new(config.chunk_size_bytes(), config.hugepages);
         let pid = PidController::new(config.kp, config.ki, config.kd, 100.0);
 
         let psi = if config.no_psi {

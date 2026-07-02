@@ -62,6 +62,10 @@ pub struct Config {
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
 
+    /// Use HugePages (MAP_HUGETLB) for memory chunk allocation
+    #[arg(long, default_value_t = false)]
+    pub hugepages: bool,
+
     // ── CPU Sponge parameters ──
 
     /// Target system CPU usage percentage (0 = disabled)
@@ -105,6 +109,7 @@ impl Default for Config {
             log_retention: 7,
             log_compress: true,
             dry_run: false,
+            hugepages: false,
             cpu_target: 0.0,
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,
@@ -192,6 +197,7 @@ impl Config {
         override_if_set!(log_retention);
         override_if_set!(log_compress);
         override_if_set!(dry_run);
+        override_if_set!(hugepages);
         override_if_set!(f64 cpu_target);
         override_if_set!(cpu_cycle);
         override_if_set!(f64 cpu_panic_margin);
@@ -246,6 +252,7 @@ mod tests {
             log_retention: 7,
             log_compress: true,
             dry_run: false,
+            hugepages: false,
             config: None,
             cpu_target: 0.0,
             cpu_cycle: 100,
@@ -420,6 +427,7 @@ mod tests {
             log_retention: 7,
             log_compress: true,
             dry_run: false,
+            hugepages: false,
             config: None,
             cpu_target: 0.0,
             cpu_cycle: 100,
