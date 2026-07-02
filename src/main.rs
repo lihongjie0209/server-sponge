@@ -64,8 +64,10 @@ fn main() {
     // Initialize logger based on command
     match &cli.command {
         Commands::Run(config) => {
+            // Dry-run: stderr only, no file logging
+            let log_dir = if config.dry_run { "".into() } else { config.log_dir.clone() };
             log_capture::init(&log_capture::LogConfig {
-                log_dir: config.log_dir.clone(),
+                log_dir,
                 log_retention_days: config.log_retention,
                 log_compress: config.log_compress,
             });
@@ -124,10 +126,101 @@ fn lower_process_priority() {
     info!("Process priority lowered: OOM score +800, nice 10");
 }
 
+/// Print a detailed dry-run plan showing what Server Sponge would do.
+fn print_dry_run_plan(config: &Config) {
+    use std::io::Write;
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+
+    let _ = writeln!(out, "\n═══════════════════════════════════════════");
+    let _ = writeln!(out, "  Server Sponge — DRY RUN MODE");
+    let _ = writeln!(out, "  No system resources will be touched.");
+    let _ = writeln!(out, "═══════════════════════════════════════════\n");
+
+    // Memory section
+    let _ = writeln!(out, "📦 MEMORY");
+    if config.target > 0.0 {
+        let mem = crate::sysinfo::get_memory_info().ok();
+        let chunk_mb = config.chunk_size_bytes() / (1024 * 1024);
+        let total_mb = mem.as_ref().map(|m| m.total / (1024 * 1024));
+        let est_chunks = total_mb.map(|t| {
+            let target_bytes = (t as f64 * config.target / 100.0) as usize;
+            (target_bytes / config.chunk_size_bytes()).max(1)
+        });
+
+        let _ = writeln!(out, "  Target usage : {}%", config.target);
+        let _ = writeln!(out, "  Chunk size   : {} MB", chunk_mb);
+        if let (Some(t), Some(c)) = (total_mb, est_chunks) {
+            let target_mb = (t as f64 * config.target / 100.0) as u64;
+            let actual_mb = c as u64 * chunk_mb as u64;
+            let _ = writeln!(out, "  System memory: {} MB total", t);
+            let _ = writeln!(out, "  Would hold   : ~{} chunks ≈ {} MB (target ~{} MB)", c, actual_mb, target_mb);
+        }
+        let _ = writeln!(out, "  PID params   : Kp={} Ki={} Kd={}", config.kp, config.ki, config.kd);
+        let _ = writeln!(out, "  PSI          : {}", if config.no_psi { "disabled" } else { "enabled" });
+        let _ = writeln!(out, "  Panic        : {}% available memory threshold", config.panic_threshold);
+        let _ = writeln!(out, "  Cooldown     : {}s after panic", config.cooldown);
+    } else {
+        let _ = writeln!(out,  "  Disabled (--target 0)");
+    }
+
+    // CPU section
+    let _ = writeln!(out, "\n⚙️  CPU");
+    if config.cpu_target > 0.0 {
+        let num_workers = if config.cpu_workers > 0 {
+            config.cpu_workers
+        } else {
+            crate::cpu_stat::detect_num_cpus()
+        };
+        let _ = writeln!(out, "  Target       : {}%", config.cpu_target);
+        let _ = writeln!(out, "  Workers      : {} (SCHED_IDLE)", num_workers);
+        let _ = writeln!(out, "  Cycle        : {} ms", config.cpu_cycle);
+        let _ = writeln!(out, "  Panic margin : {}%", config.cpu_panic_margin);
+    } else {
+        let _ = writeln!(out, "  Disabled (--cpu-target 0)");
+    }
+
+    // Server section
+    let _ = writeln!(out, "\n🌐 WEB SERVER");
+    if config.server_port > 0 {
+        let _ = writeln!(out, "  Enabled on port : {}", config.server_port);
+    } else {
+        let _ = writeln!(out, "  Disabled");
+    }
+
+    // Logging
+    let _ = writeln!(out, "\n📝 LOGGING");
+    if config.log_dir.is_empty() {
+        let _ = writeln!(out,  "  Output    : stderr only");
+    } else {
+        let _ = writeln!(out, "  Directory : {}", config.log_dir);
+        let _ = writeln!(out, "  Retention : {} days", config.log_retention);
+        let _ = writeln!(out, "  Compress  : {}", config.log_compress);
+    }
+
+    let _ = writeln!(out, "\n🛡️  PROCESS PRIORITY");
+    let _ = writeln!(out, "  OOM score adj : +800 (preferred OOM kill target)");
+    let _ = writeln!(out, "  Nice value    : 10 (low CPU priority)");
+    if config.cpu_target > 0.0 {
+        let _ = writeln!(out, "  CPU workers   : SCHED_IDLE scheduling");
+    }
+
+    let _ = writeln!(out, "\n═══════════════════════════════════════════");
+    let _ = writeln!(out, "  To execute: server-sponge run [options]");
+    let _ = writeln!(out, "═══════════════════════════════════════════\n");
+}
+
 fn run_sponge(config: Config) {
     if let Err(e) = config.validate() {
         error!("Invalid configuration: {}", e);
         std::process::exit(1);
+    }
+
+    // Dry-run: print plan and exit without touching system resources
+    if config.dry_run {
+        print_dry_run_plan(&config);
+        return;
     }
 
     // Lower resource priority to protect other services on the system

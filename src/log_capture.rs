@@ -96,7 +96,7 @@ pub fn init(config: &LogConfig) {
         .print_message(); // Print a note to stderr on startup
 
     if !config.log_dir.is_empty() {
-        let mut cleanup: Box<dyn Fn(usize) -> flexi_logger::Cleanup> = if config.log_compress {
+        let cleanup: Box<dyn Fn(usize) -> flexi_logger::Cleanup> = if config.log_compress {
             Box::new(flexi_logger::Cleanup::KeepCompressedFiles)
         } else {
             Box::new(flexi_logger::Cleanup::KeepLogFiles)

@@ -52,6 +52,10 @@ pub struct Config {
     #[arg(long, default_value_t = true)]
     pub log_compress: bool,
 
+    /// Dry-run mode: validate configuration and print plan without executing
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+
     // ── CPU Sponge parameters ──
 
     /// Target system CPU usage percentage (0 = disabled)
@@ -168,6 +172,7 @@ mod tests {
             log_dir: "".into(),
             log_retention: 7,
             log_compress: true,
+            dry_run: false,
             cpu_target: 0.0,
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,
@@ -340,6 +345,7 @@ mod tests {
             log_dir: "".into(),
             log_retention: 7,
             log_compress: true,
+            dry_run: false,
             cpu_target: 0.0,
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,
