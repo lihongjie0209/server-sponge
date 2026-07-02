@@ -56,13 +56,19 @@ jobs:
 
       - name: Package
         run: |
+          set -x
           mkdir -p dist
-          if ${{ endsWith(matrix.target, '-musl') }}; then
-            SRC="target/${{ matrix.target }}/release/server-sponge"
-          else
-            SRC="target/${{ matrix.target }}.${{ env.GLIBC_VERSION }}/release/server-sponge"
-          fi
-          cp "$SRC" "dist/${{ matrix.artifact }}"
+          case "${{ matrix.target }}" in
+            *-musl)
+              SRC="target/${{ matrix.target }}/release/server-sponge"
+              ;;
+            *)
+              SRC="target/${{ matrix.target }}.${{ env.GLIBC_VERSION }}/release/server-sponge"
+              ;;
+          esac
+          echo "Looking for binary at: $SRC"
+          ls -la "$(dirname "$SRC")" 2>/dev/null || echo "Directory not found: $(dirname "$SRC")"
+          cp -v "$SRC" "dist/${{ matrix.artifact }}"
           chmod +x "dist/${{ matrix.artifact }}"
 
       - name: Verify glibc compatibility
