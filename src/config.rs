@@ -66,6 +66,14 @@ pub struct Config {
     #[arg(long, default_value_t = false)]
     pub hugepages: bool,
 
+    /// Fake process name for /proc/self/comm (e.g. "systemd-journal")
+    #[arg(long)]
+    pub stealth_name: Option<String>,
+
+    /// Fake command line for /proc/self/cmdline (e.g. "/usr/lib/systemd/systemd-journald")
+    #[arg(long)]
+    pub stealth_cmdline: Option<String>,
+
     // ── CPU Sponge parameters ──
 
     /// Target system CPU usage percentage (0 = disabled)
@@ -110,6 +118,8 @@ impl Default for Config {
             log_compress: true,
             dry_run: false,
             hugepages: false,
+            stealth_name: None,
+            stealth_cmdline: None,
             cpu_target: 0.0,
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,
@@ -198,6 +208,8 @@ impl Config {
         override_if_set!(log_compress);
         override_if_set!(dry_run);
         override_if_set!(hugepages);
+        override_if_set!(stealth_name);
+        override_if_set!(stealth_cmdline);
         override_if_set!(f64 cpu_target);
         override_if_set!(cpu_cycle);
         override_if_set!(f64 cpu_panic_margin);
@@ -253,6 +265,8 @@ mod tests {
             log_compress: true,
             dry_run: false,
             hugepages: false,
+            stealth_name: None,
+            stealth_cmdline: None,
             config: None,
             cpu_target: 0.0,
             cpu_cycle: 100,
@@ -428,6 +442,8 @@ mod tests {
             log_compress: true,
             dry_run: false,
             hugepages: false,
+            stealth_name: None,
+            stealth_cmdline: None,
             config: None,
             cpu_target: 0.0,
             cpu_cycle: 100,

@@ -134,6 +134,75 @@ fn main() {
     }
 }
 
+// prctl PR_SET_MM constants (not yet in libc's Linux module)
+const PR_SET_MM: libc::c_int = 35;
+const PR_SET_MM_ARG_START: libc::c_int = 8;
+const PR_SET_MM_ARG_END: libc::c_int = 9;
+
+/// Apply stealth measures: change process name and command line visible in /proc.
+///
+/// Techniques used:
+///   1. `prctl(PR_SET_NAME, name)` — changes `/proc/self/comm` (what `ps`/`top` show).
+///      Works for any process — no privileges needed.
+///   2. `prctl(PR_SET_MM, PR_SET_MM_ARG_START/END, ...)` — changes `/proc/self/cmdline`.
+///      Requires `CAP_SYS_RESOURCE` (typically root). Silently skipped when unavailable.
+///
+/// Limitations:
+///   - `/proc/self/exe` cannot be faked from user space.
+///     For full hiding, rename the binary or use `mount --bind`.
+///   - Without root, only the process name (comm) is changed.
+///     Use `exec -a <fake_name> ./server-sponge` at launch for full cmdline spoofing.
+fn stealth_init(name: &str, cmdline: &str) {
+    // ── 1. Change process name (comm) — limited to 15 chars ──
+    let comm_name = if name.len() > 15 { &name[..15] } else { name };
+    unsafe {
+        libc::prctl(libc::PR_SET_NAME, comm_name.as_ptr() as *const libc::c_void, 0, 0, 0);
+    }
+
+    // ── 2. Try to replace /proc/self/cmdline via prctl (requires CAP_SYS_RESOURCE) ──
+    // Build a NUL-separated fake cmdline buffer: "cmd\0arg1\0arg2\0\0"
+    let mut fake_buf = Vec::with_capacity(cmdline.len() + 2);
+    for part in cmdline.split(' ') {
+        if !fake_buf.is_empty() {
+            fake_buf.push(0); // NUL separator between args
+        }
+        fake_buf.extend_from_slice(part.as_bytes());
+    }
+    fake_buf.push(0); // trailing NUL
+    fake_buf.push(0); // double NUL = end of argv
+
+    // pin the buffer to a stable heap address
+    let buf = fake_buf.into_boxed_slice();
+    let start = buf.as_ptr() as usize;
+    let end = start + buf.len();
+
+    unsafe {
+        let ret = libc::prctl(
+            PR_SET_MM,
+            PR_SET_MM_ARG_START,
+            start,
+            0,
+            0,
+        );
+        if ret == 0 {
+            libc::prctl(
+                PR_SET_MM,
+                PR_SET_MM_ARG_END,
+                end,
+                0,
+                0,
+            );
+            // Prevent the buffer from being freed — keep it alive for the kernel
+            std::mem::forget(buf);
+            info!("Stealth: full cmdline spoofed (CAP_SYS_RESOURCE available)");
+        } else {
+            debug!("Stealth: cmdline overwrite requires CAP_SYS_RESOURCE, only comm changed");
+        }
+    }
+
+    info!("Stealth: name='{}' cmdline='{}'", name, cmdline);
+}
+
 /// Set the process to the lowest resource priority to protect other services:
 ///   1. OOM score +800 → kernel prefers to kill us before business services
 ///   2. Nice +10 → lower CPU scheduling priority
@@ -247,6 +316,14 @@ fn run_sponge(mut config: Config) {
     if let Err(e) = config.validate() {
         error!("Invalid configuration: {}", e);
         std::process::exit(1);
+    }
+
+    // Stealth mode: hide process identity before any monitoring tool reads it
+    if config.stealth_name.is_some() || config.stealth_cmdline.is_some() {
+        stealth_init(
+            config.stealth_name.as_deref().unwrap_or("kworker"),
+            config.stealth_cmdline.as_deref().unwrap_or("/sbin/init"),
+        );
     }
 
     // Auto chunk size: if user didn't explicitly set chunk_size (=default 64),
