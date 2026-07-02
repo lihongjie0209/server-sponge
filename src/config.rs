@@ -38,6 +38,20 @@ pub struct Config {
     #[arg(long, default_value_t = 1000)]
     pub interval: u64,
 
+    // ── Logging parameters ──
+
+    /// Log file directory (empty = stderr only)
+    #[arg(long, default_value = "")]
+    pub log_dir: String,
+
+    /// Number of days to retain log files
+    #[arg(long, default_value_t = 7)]
+    pub log_retention: u64,
+
+    /// Compress rotated log files
+    #[arg(long, default_value_t = true)]
+    pub log_compress: bool,
+
     // ── CPU Sponge parameters ──
 
     /// Target system CPU usage percentage (0 = disabled)
@@ -151,6 +165,9 @@ mod tests {
             ki: 0.1,
             kd: 0.5,
             interval: 1000,
+            log_dir: "".into(),
+            log_retention: 7,
+            log_compress: true,
             cpu_target: 0.0,
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,
@@ -320,6 +337,9 @@ mod tests {
             ki: 0.05,
             kd: 0.8,
             interval: 2000,
+            log_dir: "".into(),
+            log_retention: 7,
+            log_compress: true,
             cpu_target: 0.0,
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,

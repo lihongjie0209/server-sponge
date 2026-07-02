@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::Write;
 
 use serde::Serialize;
 
@@ -30,8 +31,15 @@ fn buf() -> &'static Mutex<Buffer> {
     })
 }
 
+/// Push a log entry into the ring buffer (deduplicates consecutive identical entries).
 fn push(level: &str, message: String) {
     if let Ok(mut b) = buf().lock() {
+        // Dedup: skip if last entry has same level and message
+        if let Some(last) = b.entries.back() {
+            if last.level == level && last.message == message {
+                return;
+            }
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -66,47 +74,113 @@ pub fn get_logs_since(since_seq: u64) -> (Vec<LogEntry>, u64) {
     }
 }
 
-/// Custom logger that wraps env_logger and captures log messages
-/// into a ring buffer for the monitoring dashboard.
-pub struct CaptureLogger {
-    inner: env_logger::Logger,
+/// Configuration for log output.
+pub struct LogConfig {
+    pub log_dir: String,
+    pub log_retention_days: u64,
+    pub log_compress: bool,
 }
 
-impl CaptureLogger {
-    pub fn init() {
-        let logger = env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("info"),
-        )
-        .format_timestamp_millis()
-        .build();
+/// Initialize the logging system.
+///
+/// When `log_dir` is set, logs are written to both stderr and a rolling file
+/// in the specified directory. When empty, only stderr output is produced.
+///
+/// Respects the `RUST_LOG` environment variable for log level filtering.
+pub fn init(config: &LogConfig) {
+    let filter_str = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
 
-        let max_level = logger.filter();
-        let capture = CaptureLogger { inner: logger };
+    let mut logger = flexi_logger::Logger::try_with_str(&filter_str)
+        .expect("Failed to create flexi_logger")
+        .format_for_stderr(format_stderr)
+        .print_message(); // Print a note to stderr on startup
 
-        log::set_boxed_logger(Box::new(capture)).ok();
-        log::set_max_level(max_level);
+    if !config.log_dir.is_empty() {
+        let mut cleanup: Box<dyn Fn(usize) -> flexi_logger::Cleanup> = if config.log_compress {
+            Box::new(flexi_logger::Cleanup::KeepCompressedFiles)
+        } else {
+            Box::new(flexi_logger::Cleanup::KeepLogFiles)
+        };
+
+        logger = logger
+            .log_to_file(
+                flexi_logger::FileSpec::default()
+                    .directory(&config.log_dir)
+                    .basename("server-sponge")
+                    .suffix("log"),
+            )
+            .format_for_files(format_file)
+            .rotate(
+                flexi_logger::Criterion::Age(flexi_logger::Age::Day),
+                flexi_logger::Naming::Timestamps,
+                cleanup(config.log_retention_days.max(1) as usize),
+            );
+    }
+
+    // Build and register as global logger
+    let (boxed_logger, _handle) = logger
+        .build()
+        .expect("Failed to build flexi_logger");
+
+    // Determine max log level from the filter string
+    let max_level = parse_max_level(&filter_str);
+    log::set_boxed_logger(Box::new(FlexiCaptureLogger { inner: boxed_logger }))
+        .expect("Failed to register logger");
+    log::set_max_level(max_level);
+
+    if !config.log_dir.is_empty() {
+        let _ = std::io::stderr().write_all(
+            format!("[server-sponge] Logging to: {}/server-sponge.log (retention={}d, compress={})\n",
+                config.log_dir, config.log_retention_days, config.log_compress).as_bytes()
+        );
     }
 }
 
-impl log::Log for CaptureLogger {
+/// Parse the max log level from a RUST_LOG-style filter string.
+/// The level is taken from the first segment (before any comma or `=`).
+fn parse_max_level(filter: &str) -> log::LevelFilter {
+    // Take only the part before any comma (module-specific overrides)
+    let primary = filter.split(',').next().unwrap_or(filter).trim();
+    // Remove any "=level" suffix if present
+    let primary = primary.split('=').next().unwrap_or(primary).trim();
+
+    match primary.to_lowercase().as_str() {
+        "trace" => log::LevelFilter::Trace,
+        "debug" => log::LevelFilter::Debug,
+        "warn" => log::LevelFilter::Warn,
+        "error" => log::LevelFilter::Error,
+        "off" => log::LevelFilter::Off,
+        _ => log::LevelFilter::Info,
+    }
+}
+
+/// A logger that captures messages into the ring buffer for the dashboard,
+/// and forwards to flexi_logger for file/console output.
+struct FlexiCaptureLogger {
+    inner: Box<dyn log::Log>,
+}
+
+impl log::Log for FlexiCaptureLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
         self.inner.enabled(metadata)
     }
 
     fn log(&self, record: &log::Record) {
         if self.inner.enabled(record.metadata()) {
-            // Forward to env_logger for console output
-            self.inner.log(record);
-
             // Capture into ring buffer for WebUI
-            let level = match record.level() {
-                log::Level::Error => "error",
-                log::Level::Warn => "warn",
-                log::Level::Info => "info",
-                log::Level::Debug => "debug",
-                log::Level::Trace => "trace",
-            };
-            push(level, format!("{}", record.args()));
+            push(
+                match record.level() {
+                    log::Level::Error => "error",
+                    log::Level::Warn => "warn",
+                    log::Level::Info => "info",
+                    log::Level::Debug => "debug",
+                    log::Level::Trace => "trace",
+                },
+                format!("{}", record.args()),
+            );
+
+            // Forward to flexi_logger for actual output
+            self.inner.log(record);
         }
     }
 
@@ -115,12 +189,28 @@ impl log::Log for CaptureLogger {
     }
 }
 
+/// Format function for stderr: colored output.
+/// Capture is handled upstream by `FlexiCaptureLogger::log()`.
+fn format_stderr(
+    w: &mut dyn std::io::Write,
+    now: &mut flexi_logger::DeferredNow,
+    record: &log::Record,
+) -> std::io::Result<()> {
+    flexi_logger::colored_opt_format(w, now, record)
+}
+
+/// Format function for file output: plain timestamped output.
+fn format_file(
+    w: &mut dyn std::io::Write,
+    now: &mut flexi_logger::DeferredNow,
+    record: &log::Record,
+) -> std::io::Result<()> {
+    flexi_logger::default_format(w, now, record)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Note: tests run in the same process, sharing the global buffer.
-    // Use get_logs_since to isolate test observations.
 
     #[test]
     fn test_push_and_retrieve() {
@@ -163,20 +253,17 @@ mod tests {
         push("info", "ts check".into());
         let (logs, _) = get_logs_since(baseline);
         let e = logs.iter().find(|e| e.message == "ts check").unwrap();
-        // Millis timestamp should be > 1_000_000_000_000 (year ~2001)
         assert!(e.timestamp > 1_000_000_000_000);
     }
 
     #[test]
     fn test_buffer_capped() {
-        // Push more than MAX_ENTRIES to verify cap
         let (_, baseline) = get_logs_since(0);
         for i in 0..1100 {
             push("info", format!("flood {}", i));
         }
         let (all, _) = get_logs_since(0);
         assert!(all.len() <= MAX_ENTRIES);
-        // We should still see the latest entries
         let (recent, _) = get_logs_since(baseline);
         assert!(!recent.is_empty());
     }
@@ -185,11 +272,57 @@ mod tests {
     fn test_empty_since_latest() {
         let (_, latest) = get_logs_since(0);
         let (entries, seq) = get_logs_since(latest);
-        // Other tests may push concurrently, so only assert monotonicity
         assert!(seq >= latest);
-        // All returned entries must have seq > latest
         for e in &entries {
             assert!(e.seq > latest);
         }
+    }
+
+    #[test]
+    fn test_dedup_consecutive_identical() {
+        let (_, baseline) = get_logs_since(0);
+        push("info", "same message".into());
+        push("info", "same message".into());
+        push("info", "same message".into());
+        let (logs, _) = get_logs_since(baseline);
+        let same: Vec<_> = logs.iter().filter(|e| e.message == "same message").collect();
+        assert_eq!(same.len(), 1, "dedup should collapse identical consecutive entries");
+    }
+
+    #[test]
+    fn test_dedup_allows_different_interleaved() {
+        let (_, baseline) = get_logs_since(0);
+        push("info", "msg A".into());
+        push("info", "msg B".into());
+        push("info", "msg A".into());
+        let (logs, _) = get_logs_since(baseline);
+        let count_a = logs.iter().filter(|e| e.message == "msg A").count();
+        assert_eq!(count_a, 2, "non-consecutive duplicates should be kept");
+    }
+
+    #[test]
+    fn test_dedup_different_levels_kept() {
+        // This test relies on seq-based isolation, but the global buffer
+        // is shared across all tests. Run with --test-threads=1 for reliability.
+        let (_, baseline) = get_logs_since(0);
+        push("info", "same text".into());
+        push("warn", "same text".into());
+        let (logs, _) = get_logs_since(baseline);
+        let infos = logs.iter().filter(|e| e.message == "same text" && e.level == "info").count();
+        let warns = logs.iter().filter(|e| e.message == "same text" && e.level == "warn").count();
+        // In concurrent test runs, other entries may also be present,
+        // but our specific pushes should each appear exactly once
+        assert_eq!(infos, 1, "info-level entry missing");
+        assert_eq!(warns, 1, "warn-level entry missing");
+    }
+
+    #[test]
+    fn test_parse_max_level() {
+        assert_eq!(parse_max_level("info"), log::LevelFilter::Info);
+        assert_eq!(parse_max_level("debug"), log::LevelFilter::Debug);
+        assert_eq!(parse_max_level("warn"), log::LevelFilter::Warn);
+        assert_eq!(parse_max_level("error"), log::LevelFilter::Error);
+        assert_eq!(parse_max_level("trace"), log::LevelFilter::Trace);
+        assert_eq!(parse_max_level("info,my_module=debug"), log::LevelFilter::Info);
     }
 }

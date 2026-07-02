@@ -18,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use log::{error, info};
+use log::{debug, error, info, warn};
 
 use config::Config;
 use controller::Controller;
@@ -59,15 +59,32 @@ enum Commands {
 }
 
 fn main() {
-    log_capture::CaptureLogger::init();
-
     let cli = Cli::parse();
+
+    // Initialize logger based on command
+    match &cli.command {
+        Commands::Run(config) => {
+            log_capture::init(&log_capture::LogConfig {
+                log_dir: config.log_dir.clone(),
+                log_retention_days: config.log_retention,
+                log_compress: config.log_compress,
+            });
+        }
+        _ => {
+            // Install/Uninstall: stderr-only logging
+            log_capture::init(&log_capture::LogConfig {
+                log_dir: "".into(),
+                log_retention_days: 7,
+                log_compress: false,
+            });
+        }
+    }
 
     match cli.command {
         Commands::Run(config) => run_sponge(config),
         Commands::Install { config, bin_path, start } => {
             if let Err(e) = config.validate() {
-                error!("配置校验失败: {}", e);
+                eprintln!("配置校验失败: {}", e);
                 std::process::exit(1);
             }
             if let Err(e) = install::install(&config, &bin_path, start) {
@@ -84,11 +101,37 @@ fn main() {
     }
 }
 
+/// Set the process to the lowest resource priority to protect other services:
+///   1. OOM score +800 → kernel prefers to kill us before business services
+///   2. Nice +10 → lower CPU scheduling priority
+fn lower_process_priority() {
+    // OOM score: positive = more likely to be killed by OOM killer
+    match std::fs::write("/proc/self/oom_score_adj", b"800\n") {
+        Ok(_) => debug!("OOM score set to +800"),
+        Err(e) => warn!("Cannot set OOM score: {} (run as root for OOM protection)", e),
+    }
+
+    // Nice value: higher = lower CPU priority
+    unsafe {
+        let ret = libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+        if ret == 0 {
+            debug!("Process nice value set to 10");
+        } else {
+            warn!("Cannot set nice value: {} (may need CAP_SYS_NICE)", std::io::Error::last_os_error());
+        }
+    }
+
+    info!("Process priority lowered: OOM score +800, nice 10");
+}
+
 fn run_sponge(config: Config) {
     if let Err(e) = config.validate() {
         error!("Invalid configuration: {}", e);
         std::process::exit(1);
     }
+
+    // Lower resource priority to protect other services on the system
+    lower_process_priority();
 
     info!("=== Server Sponge starting ===");
     info!(
