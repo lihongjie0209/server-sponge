@@ -28,6 +28,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild
+      - name: Install Zig
+        run: |
+          curl -fsSL https://ziglang.org/download/0.16.0/zig-linux-x86_64-0.16.0.tar.xz | tar xJ -C /tmp
+          echo "/tmp/zig-linux-x86_64-0.16.0" >> $GITHUB_PATH
       - name: Build with glibc ${{ env.GLIBC_VERSION }} target
         run: |
           cargo zigbuild --release --target x86_64-unknown-linux-gnu.${{ env.GLIBC_VERSION }}
@@ -55,12 +59,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-zigbuild
       - name: Build (musl static)
         run: |
-          cargo zigbuild --release --target x86_64-unknown-linux-musl
+          cargo build --release --target x86_64-unknown-linux-musl
       - name: Verify fully static binary
         run: |
           BIN="target/x86_64-unknown-linux-musl/release/server-sponge"

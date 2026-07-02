@@ -39,6 +39,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild
+      - name: Install Zig
+        run: |
+          curl -fsSL https://ziglang.org/download/0.16.0/zig-linux-x86_64-0.16.0.tar.xz | tar xJ -C /tmp
+          echo "/tmp/zig-linux-x86_64-0.16.0" >> $GITHUB_PATH
 
       - name: Build (glibc ${{ env.GLIBC_VERSION }} compatible)
         if: ${{ !endsWith(matrix.target, '-musl') }}
