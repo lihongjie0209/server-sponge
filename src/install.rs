@@ -191,7 +191,7 @@ mod tests {
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,
             cpu_workers: 0,
-            server_port: 8080,
+            server_port: 0,
         }
     }
 

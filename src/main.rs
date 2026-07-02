@@ -172,15 +172,18 @@ fn run_sponge(config: Config) {
         None
     };
 
-    // Memory control loop (main thread)
-    let mut ctrl = Controller::new(config, Some(metrics_store));
-
-    while running.load(Ordering::Relaxed) {
-        if !ctrl.tick() {
-            break;
+    // Memory control loop (main thread) — skip entirely when target=0
+    if config.target > 0.0 {
+        let mut ctrl = Controller::new(config, Some(metrics_store));
+        while running.load(Ordering::Relaxed) {
+            ctrl.tick();
+            thread::sleep(Duration::from_millis(ctrl.sleep_interval_ms()));
         }
-        let sleep_ms = ctrl.sleep_interval_ms();
-        thread::sleep(Duration::from_millis(sleep_ms));
+    } else {
+        info!("Memory sponge disabled (--target=0), waiting for shutdown signal");
+        while running.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_secs(1));
+        }
     }
 
     // Join CPU threads

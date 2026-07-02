@@ -79,13 +79,13 @@ impl Controller {
             last_pid_d: 0.0,
             last_info_time: Instant::now(),
             last_action: String::new(),
-            prev_swap_pct: 0.0,
+            prev_swap_pct: f64::MAX, // MAX so first cycle never triggers false swap release
             swap_release_done: false,
         }
     }
 
-    /// Run one control cycle. Returns false if the program should exit.
-    pub fn tick(&mut self) -> bool {
+    /// Run one control cycle.
+    pub fn tick(&mut self) {
         self.cycle_count += 1;
 
         // ── Step 1: Read system memory state ──
@@ -94,7 +94,7 @@ impl Controller {
             Err(e) => {
                 warn!("Failed to read meminfo: {}, releasing all memory", e);
                 self.pool.release_all();
-                return true;
+                return;
             }
         };
 
@@ -226,8 +226,6 @@ impl Controller {
                 pid_d: self.last_pid_d,
             });
         }
-
-        true
     }
 
     fn mode_transition_reason(&self, available_pct: f64, pressure: PressureLevel) -> String {
@@ -268,7 +266,7 @@ impl Controller {
         }
 
         // Panic conditions
-        if pressure == PressureLevel::Full || available_pct < self.config.panic_threshold {
+        if pressure == PressureLevel::Full || available_pct <= self.config.panic_threshold {
             return Mode::Panic;
         }
 

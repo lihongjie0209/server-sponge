@@ -206,7 +206,7 @@ server-sponge run --target 70 --cpu-target 70 --server-port 8080
 
 | 参数 | 默认值 | 说明 |
 | :--- | :--- | :--- |
-| `--server-port` | 8080 | Web 监控仪表盘端口 (0=禁用) |
+| `--server-port` | 0 (禁用) | Web 监控仪表盘端口 (需显式指定端口号启用) |
 
 ## 日志示例
 

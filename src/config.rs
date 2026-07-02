@@ -2,7 +2,7 @@ use clap::Args;
 
 #[derive(Args, Debug, Clone)]
 pub struct Config {
-    /// Target system memory usage percentage (0-95)
+    /// Target system memory usage percentage (0 = disable memory occupation)
     #[arg(long, default_value_t = 70.0)]
     pub target: f64,
 
@@ -58,8 +58,8 @@ pub struct Config {
 
     // ── Server parameters ──
 
-    /// Monitoring server port (0 = disabled)
-    #[arg(long, default_value_t = 8080)]
+    /// Monitoring server port (0 = disabled, must be explicitly set to enable)
+    #[arg(long, default_value_t = 0)]
     pub server_port: u16,
 }
 
@@ -95,7 +95,7 @@ impl Config {
                 ]);
             }
         }
-        if self.server_port != 8080 {
+        if self.server_port > 0 {
             args.extend_from_slice(&[
                 "--server-port".into(), format!("{}", self.server_port),
             ]);
@@ -109,14 +109,16 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.target <= 0.0 || self.target > 95.0 {
-            return Err("target must be between 0 and 95".into());
+        if self.target < 0.0 || self.target > 95.0 {
+            return Err("target must be between 0 and 95 (0 to disable memory)".into());
         }
-        if self.panic_threshold <= 0.0 || self.panic_threshold >= 50.0 {
-            return Err("panic_threshold must be between 0 and 50".into());
+        if self.panic_threshold <= 0.0 || self.panic_threshold >= 100.0 - self.target {
+            return Err(
+                format!("panic_threshold must be > 0 and < {:.0} (100 - target)", 100.0 - self.target)
+            );
         }
-        if self.chunk_size == 0 {
-            return Err("chunk_size must be > 0".into());
+        if self.chunk_size == 0 || self.chunk_size > 4096 {
+            return Err("chunk_size must be between 1 and 4096".into());
         }
         // CPU validation (only when enabled)
         if self.cpu_target < 0.0 || self.cpu_target > 95.0 {
@@ -153,7 +155,7 @@ mod tests {
             cpu_cycle: 100,
             cpu_panic_margin: 5.0,
             cpu_workers: 0,
-            server_port: 8080,
+            server_port: 0,
         }
     }
 
@@ -178,10 +180,10 @@ mod tests {
     // ── target validation ──
 
     #[test]
-    fn test_target_zero_invalid() {
+    fn test_target_zero_disables_memory() {
         let mut c = default_config();
         c.target = 0.0;
-        assert!(c.validate().is_err());
+        assert!(c.validate().is_ok());
     }
 
     #[test]
@@ -199,9 +201,10 @@ mod tests {
     }
 
     #[test]
-    fn test_target_95_valid() {
+    fn test_target_95_valid_with_adjusted_panic() {
         let mut c = default_config();
         c.target = 95.0;
+        c.panic_threshold = 4.0; // must be < 100 - 95 = 5
         assert!(c.validate().is_ok());
     }
 
@@ -236,9 +239,9 @@ mod tests {
     }
 
     #[test]
-    fn test_panic_threshold_49_valid() {
-        let mut c = default_config();
-        c.panic_threshold = 49.0;
+    fn test_panic_threshold_25_valid() {
+        let mut c = default_config(); // target=70 → max panic=29
+        c.panic_threshold = 25.0;
         assert!(c.validate().is_ok());
     }
 
@@ -450,10 +453,10 @@ mod tests {
     // ── server_port to_args ──
 
     #[test]
-    fn test_to_args_excludes_default_server_port() {
-        let c = default_config(); // server_port=8080 (default)
+    fn test_to_args_excludes_default_disabled_server_port() {
+        let c = default_config(); // server_port=0 (default, disabled)
         let s = c.to_args_string();
-        assert!(!s.contains("--server-port"), "default should be omitted, got: {}", s);
+        assert!(!s.contains("--server-port"), "disabled default should be omitted, got: {}", s);
     }
 
     #[test]
@@ -465,10 +468,10 @@ mod tests {
     }
 
     #[test]
-    fn test_to_args_includes_zero_server_port() {
+    fn test_to_args_includes_non_zero_server_port() {
         let mut c = default_config();
-        c.server_port = 0;
+        c.server_port = 8080;
         let s = c.to_args_string();
-        assert!(s.contains("--server-port 0"), "got: {}", s);
+        assert!(s.contains("--server-port 8080"), "got: {}", s);
     }
 }
