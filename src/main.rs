@@ -65,7 +65,11 @@ fn main() {
     match &cli.command {
         Commands::Run(config) => {
             // Dry-run: stderr only, no file logging
-            let log_dir = if config.dry_run { "".into() } else { config.log_dir.clone() };
+            let log_dir = if config.dry_run {
+                "".into()
+            } else {
+                config.log_dir.clone()
+            };
             log_capture::init(&log_capture::LogConfig {
                 log_dir,
                 log_retention_days: config.log_retention,
@@ -115,7 +119,11 @@ fn main() {
             }
             run_sponge(config);
         }
-        Commands::Install { config, bin_path, start } => {
+        Commands::Install {
+            config,
+            bin_path,
+            start,
+        } => {
             if let Err(e) = config.validate() {
                 eprintln!("配置校验失败: {}", e);
                 std::process::exit(1);
@@ -154,9 +162,15 @@ const PR_SET_MM_ARG_END: libc::c_int = 9;
 ///     Use `exec -a <fake_name> ./server-sponge` at launch for full cmdline spoofing.
 fn stealth_init(name: &str, cmdline: &str) {
     // ── 1. Change process name (comm) — limited to 15 chars ──
-    let comm_name = if name.len() > 15 { &name[..15] } else { name };
+    let comm_name = comm_name_bytes(name);
     unsafe {
-        libc::prctl(libc::PR_SET_NAME, comm_name.as_ptr() as *const libc::c_void, 0, 0, 0);
+        libc::prctl(
+            libc::PR_SET_NAME,
+            comm_name.as_ptr() as *const libc::c_void,
+            0,
+            0,
+            0,
+        );
     }
 
     // ── 2. Try to replace /proc/self/cmdline via prctl (requires CAP_SYS_RESOURCE) ──
@@ -177,21 +191,9 @@ fn stealth_init(name: &str, cmdline: &str) {
     let end = start + buf.len();
 
     unsafe {
-        let ret = libc::prctl(
-            PR_SET_MM,
-            PR_SET_MM_ARG_START,
-            start,
-            0,
-            0,
-        );
+        let ret = libc::prctl(PR_SET_MM, PR_SET_MM_ARG_START, start, 0, 0);
         if ret == 0 {
-            libc::prctl(
-                PR_SET_MM,
-                PR_SET_MM_ARG_END,
-                end,
-                0,
-                0,
-            );
+            libc::prctl(PR_SET_MM, PR_SET_MM_ARG_END, end, 0, 0);
             // Prevent the buffer from being freed — keep it alive for the kernel
             std::mem::forget(buf);
             info!("Stealth: full cmdline spoofed (CAP_SYS_RESOURCE available)");
@@ -210,7 +212,10 @@ fn lower_process_priority() {
     // OOM score: positive = more likely to be killed by OOM killer
     match std::fs::write("/proc/self/oom_score_adj", b"800\n") {
         Ok(_) => debug!("OOM score set to +800"),
-        Err(e) => warn!("Cannot set OOM score: {} (run as root for OOM protection)", e),
+        Err(e) => warn!(
+            "Cannot set OOM score: {} (run as root for OOM protection)",
+            e
+        ),
     }
 
     // Nice value: higher = lower CPU priority
@@ -219,7 +224,10 @@ fn lower_process_priority() {
         if ret == 0 {
             debug!("Process nice value set to 10");
         } else {
-            warn!("Cannot set nice value: {} (may need CAP_SYS_NICE)", std::io::Error::last_os_error());
+            warn!(
+                "Cannot set nice value: {} (may need CAP_SYS_NICE)",
+                std::io::Error::last_os_error()
+            );
         }
     }
 
@@ -255,15 +263,39 @@ fn print_dry_run_plan(config: &Config) {
             let target_mb = (t as f64 * config.target / 100.0) as u64;
             let actual_mb = c as u64 * chunk_mb as u64;
             let _ = writeln!(out, "  System memory: {} MB total", t);
-            let _ = writeln!(out, "  Would hold   : ~{} chunks ≈ {} MB (target ~{} MB)", c, actual_mb, target_mb);
+            let _ = writeln!(
+                out,
+                "  Would hold   : ~{} chunks ≈ {} MB (target ~{} MB)",
+                c, actual_mb, target_mb
+            );
         }
-        let _ = writeln!(out, "  PID params   : Kp={} Ki={} Kd={}", config.kp, config.ki, config.kd);
-        let _ = writeln!(out, "  PSI          : {}", if config.no_psi { "disabled" } else { "enabled" });
-        let _ = writeln!(out, "  Panic        : {}% available memory threshold", config.panic_threshold);
+        let _ = writeln!(
+            out,
+            "  PID params   : Kp={} Ki={} Kd={}",
+            config.kp, config.ki, config.kd
+        );
+        let _ = writeln!(
+            out,
+            "  PSI          : {}",
+            if config.no_psi { "disabled" } else { "enabled" }
+        );
+        let _ = writeln!(
+            out,
+            "  Panic        : {}% available memory threshold",
+            config.panic_threshold
+        );
         let _ = writeln!(out, "  Cooldown     : {}s after panic", config.cooldown);
-        let _ = writeln!(out, "  HugePages    : {}", if config.hugepages { "enabled" } else { "disabled" });
+        let _ = writeln!(
+            out,
+            "  HugePages    : {}",
+            if config.hugepages {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
     } else {
-        let _ = writeln!(out,  "  Disabled (--target 0)");
+        let _ = writeln!(out, "  Disabled (--target 0)");
     }
 
     // CPU section
@@ -293,7 +325,7 @@ fn print_dry_run_plan(config: &Config) {
     // Logging
     let _ = writeln!(out, "\n📝 LOGGING");
     if config.log_dir.is_empty() {
-        let _ = writeln!(out,  "  Output    : stderr only");
+        let _ = writeln!(out, "  Output    : stderr only");
     } else {
         let _ = writeln!(out, "  Directory : {}", config.log_dir);
         let _ = writeln!(out, "  Retention : {} days", config.log_retention);
@@ -392,20 +424,26 @@ fn run_sponge(mut config: Config) {
             );
         }
         Err(e) => {
-            error!("Cannot read /proc/meminfo: {}. Are you running on Linux?", e);
+            error!(
+                "Cannot read /proc/meminfo: {}. Are you running on Linux?",
+                e
+            );
             std::process::exit(1);
         }
     }
 
     // Set up graceful shutdown via signal handler
     let running = Arc::new(AtomicBool::new(true));
-    {
-        let r = running.clone();
-        RUNNING_FLAG.lock().unwrap().replace(r);
-    }
+    SIGNAL_RECEIVED.store(true, Ordering::Relaxed);
     unsafe {
-        libc::signal(libc::SIGINT, signal_handler as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, signal_handler as libc::sighandler_t);
+        libc::signal(
+            libc::SIGINT,
+            signal_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            signal_handler as *const () as libc::sighandler_t,
+        );
     }
 
     // Create shared metrics store
@@ -436,16 +474,18 @@ fn run_sponge(mut config: Config) {
     // Memory control loop (main thread) — skip entirely when target=0
     if config.target > 0.0 {
         let mut ctrl = Controller::new(config, Some(metrics_store));
-        while running.load(Ordering::Relaxed) {
+        while is_running(&running) {
             ctrl.tick();
             thread::sleep(Duration::from_millis(ctrl.sleep_interval_ms()));
         }
     } else {
         info!("Memory sponge disabled (--target=0), waiting for shutdown signal");
-        while running.load(Ordering::Relaxed) {
+        while is_running(&running) {
             thread::sleep(Duration::from_secs(1));
         }
     }
+
+    running.store(false, Ordering::Relaxed);
 
     // Join CPU threads
     if let Some(cpu) = cpu_ctrl {
@@ -455,12 +495,36 @@ fn run_sponge(mut config: Config) {
     info!("=== Server Sponge shutting down ===");
 }
 
-static RUNNING_FLAG: std::sync::Mutex<Option<Arc<AtomicBool>>> = std::sync::Mutex::new(None);
+static SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(true);
+
+fn is_running(running: &AtomicBool) -> bool {
+    running.load(Ordering::Relaxed) && SIGNAL_RECEIVED.load(Ordering::Relaxed)
+}
+
+fn comm_name_bytes(name: &str) -> Vec<u8> {
+    let sanitized = name.replace('\0', "");
+    let mut end = sanitized.len().min(15);
+    while !sanitized.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut bytes = sanitized.as_bytes()[..end].to_vec();
+    bytes.push(0);
+    bytes
+}
 
 extern "C" fn signal_handler(_sig: libc::c_int) {
-    if let Ok(guard) = RUNNING_FLAG.lock() {
-        if let Some(flag) = guard.as_ref() {
-            flag.store(false, Ordering::Relaxed);
-        }
+    SIGNAL_RECEIVED.store(false, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::comm_name_bytes;
+
+    #[test]
+    fn comm_name_truncation_preserves_utf8_boundaries() {
+        let bytes = comm_name_bytes("中文进程名称");
+        assert!(bytes.len() <= 16);
+        assert_eq!(bytes.last(), Some(&0));
+        assert!(std::str::from_utf8(&bytes[..bytes.len() - 1]).is_ok());
     }
 }

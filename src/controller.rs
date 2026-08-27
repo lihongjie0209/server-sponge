@@ -117,10 +117,7 @@ impl Controller {
         // ── Step 2: Check PSI pressure ──
         let pressure = if !self.config.no_psi && self.psi.is_available() {
             let p = self.psi.poll(0);
-            debug!(
-                "[#{:>5}]    PSI probe: level={:?}",
-                self.cycle_count, p
-            );
+            debug!("[#{:>5}]    PSI probe: level={:?}", self.cycle_count, p);
             p
         } else {
             PressureLevel::None
@@ -230,7 +227,7 @@ impl Controller {
 
     fn mode_transition_reason(&self, available_pct: f64, pressure: PressureLevel) -> String {
         if pressure == PressureLevel::Full {
-            return format!("PSI full stall detected");
+            return "PSI full stall detected".to_string();
         }
         if available_pct < self.config.panic_threshold {
             return format!(
@@ -239,7 +236,7 @@ impl Controller {
             );
         }
         if pressure == PressureLevel::Some {
-            return format!("PSI some stall detected");
+            return "PSI some stall detected".to_string();
         }
         if let Some(start) = self.cooldown_start {
             let elapsed = start.elapsed().as_secs();
@@ -308,7 +305,7 @@ impl Controller {
 
         if chunks > 0 {
             let max_alloc = (error / pct_per_chunk.max(0.1)).ceil().max(0.0) as usize;
-            let n = (chunks as usize).min(max_alloc).min(5).max(1);
+            let n = (chunks as usize).min(max_alloc).clamp(1, 5);
             debug!(
                 "[#{:>5}]    Decision: ALLOCATE {} chunks (wanted={}, max_to_target={}, cap=5)",
                 self.cycle_count, n, chunks, max_alloc
@@ -316,11 +313,16 @@ impl Controller {
             self.pool.allocate_chunks(n);
             self.last_action = format!("ALLOC(+{})", n);
         } else if chunks < 0 {
-            let n = ((-chunks) as usize).min(self.pool.len()).min(self.pool.len() / 2 + 1);
+            let n = ((-chunks) as usize)
+                .min(self.pool.len())
+                .min(self.pool.len() / 2 + 1);
             if n > 0 {
                 debug!(
                     "[#{:>5}]    Decision: RELEASE {} chunks (wanted={}, pool_cap={})",
-                    self.cycle_count, n, -chunks, self.pool.len() / 2 + 1
+                    self.cycle_count,
+                    n,
+                    -chunks,
+                    self.pool.len() / 2 + 1
                 );
                 self.pool.release_chunks(n);
                 self.last_action = format!("RELEASE(-{})", n);
@@ -328,10 +330,7 @@ impl Controller {
                 self.last_action = "HOLD".into();
             }
         } else {
-            debug!(
-                "[#{:>5}]    Decision: HOLD (no change)",
-                self.cycle_count
-            );
+            debug!("[#{:>5}]    Decision: HOLD (no change)", self.cycle_count);
             self.last_action = "HOLD".into();
         }
 
@@ -349,7 +348,10 @@ impl Controller {
             let released = self.pool.release_fraction(0.2);
             debug!(
                 "[#{:>5}]    RESPONSIVE RELEASE 20% = {} chunks (pool: {} -> {})",
-                self.cycle_count, released, before, self.pool.len()
+                self.cycle_count,
+                released,
+                before,
+                self.pool.len()
             );
             self.last_action = format!("RESPONSIVE(-{})", released);
         } else {
@@ -367,33 +369,31 @@ impl Controller {
             let before = self.pool.len();
             warn!(
                 "[MEM] ⚠ PANIC: Emergency release! pool={} chunks ({} MB)",
-                before, self.pool.total_bytes() / (1024 * 1024)
+                before,
+                self.pool.total_bytes() / (1024 * 1024)
             );
             let released_80 = self.pool.release_fraction(0.8);
-            if self.pool.len() > 0 {
+            if !self.pool.is_empty() {
                 let remaining = self.pool.release_all();
                 self.last_action = format!("PANIC(-{})", released_80 + remaining);
             } else {
                 self.last_action = format!("PANIC(-{})", released_80);
             }
         } else {
-            debug!(
-                "[#{:>5}]    PANIC: pool already empty",
-                self.cycle_count
-            );
+            debug!("[#{:>5}]    PANIC: pool already empty", self.cycle_count);
             self.last_action = "PANIC(empty)".into();
         }
         self.pid.reset();
         self.cooldown_start = Some(Instant::now());
         self.mode = Mode::Cooldown;
-        info!(
-            "[MEM] Entering COOLDOWN for {}s",
-            self.config.cooldown
-        );
+        info!("[MEM] Entering COOLDOWN for {}s", self.config.cooldown);
     }
 
     fn action_cooldown(&mut self) {
-        let elapsed = self.cooldown_start.map(|s| s.elapsed().as_secs()).unwrap_or(0);
+        let elapsed = self
+            .cooldown_start
+            .map(|s| s.elapsed().as_secs())
+            .unwrap_or(0);
         debug!(
             "[#{:>5}]    HOLD (cooldown {}/{}s)",
             self.cycle_count, elapsed, self.config.cooldown
@@ -406,15 +406,7 @@ impl Controller {
         match self.mode {
             Mode::Steady | Mode::Cooldown => self.config.interval,
             Mode::Responsive => self.config.interval / 10, // 10x faster in responsive mode
-            Mode::Panic => 50, // Minimal delay in panic
+            Mode::Panic => 50,                             // Minimal delay in panic
         }
-    }
-
-    pub fn mode(&self) -> Mode {
-        self.mode
-    }
-
-    pub fn pool_size(&self) -> usize {
-        self.pool.len()
     }
 }

@@ -1,6 +1,6 @@
 use log::{debug, info, warn};
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 
 /// Pressure level detected from PSI
@@ -16,8 +16,8 @@ pub enum PressureLevel {
 
 /// PSI monitor that uses epoll to listen for kernel memory pressure events.
 pub struct PsiMonitor {
-    some_fd: Option<File>,
-    full_fd: Option<File>,
+    _some_fd: Option<File>,
+    _full_fd: Option<File>,
     epoll_fd: Option<i32>,
 }
 
@@ -43,8 +43,8 @@ impl PsiMonitor {
             Err(e) => {
                 warn!("PSI unavailable ({}), falling back to polling mode", e);
                 Self {
-                    some_fd: None,
-                    full_fd: None,
+                    _some_fd: None,
+                    _full_fd: None,
                     epoll_fd: None,
                 }
             }
@@ -70,8 +70,8 @@ impl PsiMonitor {
         Self::epoll_add(epoll_fd, full_fd.as_raw_fd(), 2)?;
 
         Ok(Self {
-            some_fd: Some(some_fd),
-            full_fd: Some(full_fd),
+            _some_fd: Some(some_fd),
+            _full_fd: Some(full_fd),
             epoll_fd: Some(epoll_fd),
         })
     }
@@ -134,8 +134,8 @@ impl PsiMonitor {
         }
 
         let mut max_level = PressureLevel::None;
-        for i in 0..n as usize {
-            match events[i].data {
+        for event in events.iter().take(n as usize) {
+            match event.data {
                 1 => {
                     debug!("PSI: 'some' pressure detected");
                     if max_level == PressureLevel::None {
@@ -151,13 +151,6 @@ impl PsiMonitor {
         }
 
         max_level
-    }
-
-    /// Read current PSI statistics (for logging/diagnostics).
-    pub fn read_stats() -> io::Result<String> {
-        let mut content = String::new();
-        File::open("/proc/pressure/memory")?.read_to_string(&mut content)?;
-        Ok(content)
     }
 }
 

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::io::Write;
 
 use serde::Serialize;
 
@@ -118,20 +118,23 @@ pub fn init(config: &LogConfig) {
     }
 
     // Build and register as global logger
-    let (boxed_logger, _handle) = logger
-        .build()
-        .expect("Failed to build flexi_logger");
+    let (boxed_logger, _handle) = logger.build().expect("Failed to build flexi_logger");
 
     // Determine max log level from the filter string
     let max_level = parse_max_level(&filter_str);
-    log::set_boxed_logger(Box::new(FlexiCaptureLogger { inner: boxed_logger }))
-        .expect("Failed to register logger");
+    log::set_boxed_logger(Box::new(FlexiCaptureLogger {
+        inner: boxed_logger,
+    }))
+    .expect("Failed to register logger");
     log::set_max_level(max_level);
 
     if !config.log_dir.is_empty() {
         let _ = std::io::stderr().write_all(
-            format!("[server-sponge] Logging to: {}/server-sponge.log (retention={}d, compress={})\n",
-                config.log_dir, config.log_retention_days, config.log_compress).as_bytes()
+            format!(
+                "[server-sponge] Logging to: {}/server-sponge.log (retention={}d, compress={})\n",
+                config.log_dir, config.log_retention_days, config.log_compress
+            )
+            .as_bytes(),
         );
     }
 }
@@ -281,12 +284,19 @@ mod tests {
     #[test]
     fn test_dedup_consecutive_identical() {
         let (_, baseline) = get_logs_since(0);
-        push("info", "same message".into());
-        push("info", "same message".into());
-        push("info", "same message".into());
+        // Keep this sample isolated from the process-global buffer when tests
+        // are run in parallel or multiple test binaries run concurrently.
+        let message = format!("same message {:?}", std::thread::current().id());
+        push("info", message.clone());
+        push("info", message.clone());
+        push("info", message.clone());
         let (logs, _) = get_logs_since(baseline);
-        let same: Vec<_> = logs.iter().filter(|e| e.message == "same message").collect();
-        assert_eq!(same.len(), 1, "dedup should collapse identical consecutive entries");
+        let same: Vec<_> = logs.iter().filter(|e| e.message == message).collect();
+        assert_eq!(
+            same.len(),
+            1,
+            "dedup should collapse identical consecutive entries"
+        );
     }
 
     #[test]
@@ -308,8 +318,14 @@ mod tests {
         push("info", "same text".into());
         push("warn", "same text".into());
         let (logs, _) = get_logs_since(baseline);
-        let infos = logs.iter().filter(|e| e.message == "same text" && e.level == "info").count();
-        let warns = logs.iter().filter(|e| e.message == "same text" && e.level == "warn").count();
+        let infos = logs
+            .iter()
+            .filter(|e| e.message == "same text" && e.level == "info")
+            .count();
+        let warns = logs
+            .iter()
+            .filter(|e| e.message == "same text" && e.level == "warn")
+            .count();
         // In concurrent test runs, other entries may also be present,
         // but our specific pushes should each appear exactly once
         assert_eq!(infos, 1, "info-level entry missing");
@@ -323,6 +339,9 @@ mod tests {
         assert_eq!(parse_max_level("warn"), log::LevelFilter::Warn);
         assert_eq!(parse_max_level("error"), log::LevelFilter::Error);
         assert_eq!(parse_max_level("trace"), log::LevelFilter::Trace);
-        assert_eq!(parse_max_level("info,my_module=debug"), log::LevelFilter::Info);
+        assert_eq!(
+            parse_max_level("info,my_module=debug"),
+            log::LevelFilter::Info
+        );
     }
 }

@@ -5,6 +5,13 @@ use std::time::Instant;
 /// Raw CPU time sample from /proc/stat aggregate "cpu" line.
 /// All values are in jiffies (clock ticks) summed across all CPUs.
 #[derive(Debug, Clone)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Individual CPU counters are validated by parser tests and used to calculate totals."
+    )
+)]
 pub struct CpuSample {
     pub user: u64,
     pub nice: u64,
@@ -116,9 +123,7 @@ pub fn parse_self_stat(content: &str) -> io::Result<ProcessCpuSample> {
     let after_comm = content
         .rfind(')')
         .map(|i| &content[i + 2..])
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "malformed /proc/self/stat")
-        })?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed /proc/self/stat"))?;
 
     let fields: Vec<&str> = after_comm.split_whitespace().collect();
     // After "(comm) ", fields are: state ppid pgrp session tty tpgid flags
@@ -205,10 +210,16 @@ fn clk_tck() -> u64 {
     #[cfg(target_os = "linux")]
     {
         let tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-        if tck > 0 { tck as u64 } else { 100 }
+        if tck > 0 {
+            tck as u64
+        } else {
+            100
+        }
     }
     #[cfg(not(target_os = "linux"))]
-    { 100 }
+    {
+        100
+    }
 }
 
 /// Calculate container-relative CPU usage from cgroup cpu.stat + /proc/self/stat.
@@ -223,7 +234,11 @@ pub fn calculate_cgroup_usage(
     let elapsed = curr_cg.timestamp.duration_since(prev_cg.timestamp);
     let elapsed_usec = elapsed.as_micros() as f64;
     if elapsed_usec <= 0.0 || cgroup_cpus == 0 {
-        return CpuUsage { total_pct: 0.0, self_pct: 0.0, others_pct: 0.0 };
+        return CpuUsage {
+            total_pct: 0.0,
+            self_pct: 0.0,
+            others_pct: 0.0,
+        };
     }
 
     // Total container CPU: delta of usage_usec / (elapsed * cgroup_cpus)
@@ -284,10 +299,14 @@ pub fn count_online_cpus_from(content: &str) -> usize {
         .filter(|l| {
             l.starts_with("cpu")
                 && !l.starts_with("cpu ")
-                && l.as_bytes().get(3).map_or(false, |c| c.is_ascii_digit())
+                && l.as_bytes().get(3).is_some_and(|c| c.is_ascii_digit())
         })
         .count();
-    if count > 0 { count } else { 1 }
+    if count > 0 {
+        count
+    } else {
+        1
+    }
 }
 
 /// Compute the scaling factor to convert host-wide /proc/stat percentages
@@ -304,7 +323,7 @@ pub fn cgroup_cpu_scale() -> f64 {
 }
 
 pub fn parse_cgroup_v2_cpu(content: &str) -> Option<usize> {
-    let parts: Vec<&str> = content.trim().split_whitespace().collect();
+    let parts: Vec<&str> = content.split_whitespace().collect();
     if parts.len() >= 2 && parts[0] != "max" {
         let max: f64 = parts[0].parse().ok()?;
         let period: f64 = parts[1].parse().ok()?;
@@ -420,10 +439,33 @@ mod tests {
 
     #[test]
     fn test_usage_50_percent() {
-        let prev = CpuSample { user: 0, nice: 0, system: 0, idle: 500, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 1000 };
-        let curr = CpuSample { user: 500, nice: 0, system: 0, idle: 1000, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 2000 };
+        let prev = CpuSample {
+            user: 0,
+            nice: 0,
+            system: 0,
+            idle: 500,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 1000,
+        };
+        let curr = CpuSample {
+            user: 500,
+            nice: 0,
+            system: 0,
+            idle: 1000,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 2000,
+        };
         let pp = ProcessCpuSample { utime: 0, stime: 0 };
-        let cp = ProcessCpuSample { utime: 100, stime: 50 };
+        let cp = ProcessCpuSample {
+            utime: 100,
+            stime: 50,
+        };
         let u = calculate_usage(&prev, &curr, &pp, &cp);
         assert!((u.total_pct - 50.0).abs() < 0.1, "total={}", u.total_pct);
         assert!((u.self_pct - 15.0).abs() < 0.1, "self={}", u.self_pct);
@@ -432,8 +474,21 @@ mod tests {
 
     #[test]
     fn test_usage_zero_delta() {
-        let s = CpuSample { user: 100, nice: 0, system: 50, idle: 850, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 1000 };
-        let p = ProcessCpuSample { utime: 10, stime: 5 };
+        let s = CpuSample {
+            user: 100,
+            nice: 0,
+            system: 50,
+            idle: 850,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 1000,
+        };
+        let p = ProcessCpuSample {
+            utime: 10,
+            stime: 5,
+        };
         let u = calculate_usage(&s, &s, &p, &p);
         assert_eq!(u.total_pct, 0.0);
         assert_eq!(u.self_pct, 0.0);
@@ -441,8 +496,28 @@ mod tests {
 
     #[test]
     fn test_usage_100_percent_busy() {
-        let prev = CpuSample { user: 0, nice: 0, system: 0, idle: 0, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 0 };
-        let curr = CpuSample { user: 800, nice: 100, system: 100, idle: 0, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 1000 };
+        let prev = CpuSample {
+            user: 0,
+            nice: 0,
+            system: 0,
+            idle: 0,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 0,
+        };
+        let curr = CpuSample {
+            user: 800,
+            nice: 100,
+            system: 100,
+            idle: 0,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 1000,
+        };
         let pp = ProcessCpuSample { utime: 0, stime: 0 };
         let cp = ProcessCpuSample { utime: 0, stime: 0 };
         let u = calculate_usage(&prev, &curr, &pp, &cp);
@@ -451,8 +526,28 @@ mod tests {
 
     #[test]
     fn test_usage_0_percent_all_idle() {
-        let prev = CpuSample { user: 0, nice: 0, system: 0, idle: 0, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 0 };
-        let curr = CpuSample { user: 0, nice: 0, system: 0, idle: 1000, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 1000 };
+        let prev = CpuSample {
+            user: 0,
+            nice: 0,
+            system: 0,
+            idle: 0,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 0,
+        };
+        let curr = CpuSample {
+            user: 0,
+            nice: 0,
+            system: 0,
+            idle: 1000,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 1000,
+        };
         let pp = ProcessCpuSample { utime: 0, stime: 0 };
         let cp = ProcessCpuSample { utime: 0, stime: 0 };
         let u = calculate_usage(&prev, &curr, &pp, &cp);
@@ -462,18 +557,61 @@ mod tests {
     #[test]
     fn test_usage_others_nonnegative() {
         // self_pct > total_pct edge case
-        let prev = CpuSample { user: 0, nice: 0, system: 0, idle: 500, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 1000 };
-        let curr = CpuSample { user: 200, nice: 0, system: 0, idle: 800, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 2000 };
+        let prev = CpuSample {
+            user: 0,
+            nice: 0,
+            system: 0,
+            idle: 500,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 1000,
+        };
+        let curr = CpuSample {
+            user: 200,
+            nice: 0,
+            system: 0,
+            idle: 800,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 2000,
+        };
         let pp = ProcessCpuSample { utime: 0, stime: 0 };
-        let cp = ProcessCpuSample { utime: 500, stime: 500 };
+        let cp = ProcessCpuSample {
+            utime: 500,
+            stime: 500,
+        };
         let u = calculate_usage(&prev, &curr, &pp, &cp);
         assert!(u.others_pct >= 0.0);
     }
 
     #[test]
     fn test_usage_iowait_counts_as_idle() {
-        let prev = CpuSample { user: 0, nice: 0, system: 0, idle: 0, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 0 };
-        let curr = CpuSample { user: 200, nice: 0, system: 0, idle: 600, iowait: 200, irq: 0, softirq: 0, steal: 0, total: 1000 };
+        let prev = CpuSample {
+            user: 0,
+            nice: 0,
+            system: 0,
+            idle: 0,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 0,
+        };
+        let curr = CpuSample {
+            user: 200,
+            nice: 0,
+            system: 0,
+            idle: 600,
+            iowait: 200,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 1000,
+        };
         let pp = ProcessCpuSample { utime: 0, stime: 0 };
         let cp = ProcessCpuSample { utime: 0, stime: 0 };
         let u = calculate_usage(&prev, &curr, &pp, &cp);
@@ -483,10 +621,33 @@ mod tests {
 
     #[test]
     fn test_usage_self_equals_total_when_only_process() {
-        let prev = CpuSample { user: 0, nice: 0, system: 0, idle: 500, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 1000 };
-        let curr = CpuSample { user: 500, nice: 0, system: 0, idle: 1000, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 2000 };
+        let prev = CpuSample {
+            user: 0,
+            nice: 0,
+            system: 0,
+            idle: 500,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 1000,
+        };
+        let curr = CpuSample {
+            user: 500,
+            nice: 0,
+            system: 0,
+            idle: 1000,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            steal: 0,
+            total: 2000,
+        };
         let pp = ProcessCpuSample { utime: 0, stime: 0 };
-        let cp = ProcessCpuSample { utime: 300, stime: 200 }; // 500 = all non-idle
+        let cp = ProcessCpuSample {
+            utime: 300,
+            stime: 200,
+        }; // 500 = all non-idle
         let u = calculate_usage(&prev, &curr, &pp, &cp);
         assert!((u.total_pct - 50.0).abs() < 0.1);
         assert!((u.self_pct - 50.0).abs() < 0.1);
@@ -544,9 +705,17 @@ mod tests {
 
     #[test]
     fn test_cpu_usage_display() {
-        let u = CpuUsage { total_pct: 70.5, self_pct: 40.2, others_pct: 30.3 };
+        let u = CpuUsage {
+            total_pct: 70.5,
+            self_pct: 40.2,
+            others_pct: 30.3,
+        };
         let s = format!("{}", u);
-        assert!(s.contains("70.5") && s.contains("40.2") && s.contains("30.3"), "got: {}", s);
+        assert!(
+            s.contains("70.5") && s.contains("40.2") && s.contains("30.3"),
+            "got: {}",
+            s
+        );
     }
 
     // ── count_online_cpus_from ──
@@ -589,7 +758,8 @@ mod tests {
 
     #[test]
     fn test_parse_cgroup_cpu_usage_basic() {
-        let content = "usage_usec 245973894\nuser_usec 237505414\nsystem_usec 8468479\nnr_periods 2184\n";
+        let content =
+            "usage_usec 245973894\nuser_usec 237505414\nsystem_usec 8468479\nnr_periods 2184\n";
         assert_eq!(parse_cgroup_cpu_usage(content), Some(245973894));
     }
 
@@ -600,7 +770,10 @@ mod tests {
 
     #[test]
     fn test_parse_cgroup_cpu_usage_missing() {
-        assert_eq!(parse_cgroup_cpu_usage("user_usec 100\nsystem_usec 50\n"), None);
+        assert_eq!(
+            parse_cgroup_cpu_usage("user_usec 100\nsystem_usec 50\n"),
+            None
+        );
     }
 
     #[test]
@@ -613,11 +786,20 @@ mod tests {
     #[test]
     fn test_cgroup_usage_50pct_on_2_cores() {
         let now = Instant::now();
-        let prev = CgroupCpuSample { usage_usec: 0, timestamp: now };
+        let prev = CgroupCpuSample {
+            usage_usec: 0,
+            timestamp: now,
+        };
         // Simulate 1 second elapsed, 1_000_000 usec used on 2 cores = 50%
-        let curr = CgroupCpuSample { usage_usec: 1_000_000, timestamp: now + std::time::Duration::from_secs(1) };
+        let curr = CgroupCpuSample {
+            usage_usec: 1_000_000,
+            timestamp: now + std::time::Duration::from_secs(1),
+        };
         let pp = ProcessCpuSample { utime: 0, stime: 0 };
-        let cp = ProcessCpuSample { utime: 50, stime: 50 }; // 100 jiffies = 1sec at CLK_TCK=100
+        let cp = ProcessCpuSample {
+            utime: 50,
+            stime: 50,
+        }; // 100 jiffies = 1sec at CLK_TCK=100
         let u = calculate_cgroup_usage(&prev, &curr, &pp, &cp, 2);
         assert!((u.total_pct - 50.0).abs() < 1.0, "total={}", u.total_pct);
         assert!((u.self_pct - 50.0).abs() < 1.0, "self={}", u.self_pct);
@@ -627,11 +809,20 @@ mod tests {
     #[test]
     fn test_cgroup_usage_100pct_on_2_cores() {
         let now = Instant::now();
-        let prev = CgroupCpuSample { usage_usec: 0, timestamp: now };
+        let prev = CgroupCpuSample {
+            usage_usec: 0,
+            timestamp: now,
+        };
         // 2 seconds of CPU on 2 cores in 1 wall second = 100%
-        let curr = CgroupCpuSample { usage_usec: 2_000_000, timestamp: now + std::time::Duration::from_secs(1) };
+        let curr = CgroupCpuSample {
+            usage_usec: 2_000_000,
+            timestamp: now + std::time::Duration::from_secs(1),
+        };
         let pp = ProcessCpuSample { utime: 0, stime: 0 };
-        let cp = ProcessCpuSample { utime: 100, stime: 100 };
+        let cp = ProcessCpuSample {
+            utime: 100,
+            stime: 100,
+        };
         let u = calculate_cgroup_usage(&prev, &curr, &pp, &cp, 2);
         assert!((u.total_pct - 100.0).abs() < 1.0, "total={}", u.total_pct);
     }
@@ -639,8 +830,14 @@ mod tests {
     #[test]
     fn test_cgroup_usage_zero_elapsed() {
         let now = Instant::now();
-        let s = CgroupCpuSample { usage_usec: 100, timestamp: now };
-        let p = ProcessCpuSample { utime: 10, stime: 5 };
+        let s = CgroupCpuSample {
+            usage_usec: 100,
+            timestamp: now,
+        };
+        let p = ProcessCpuSample {
+            utime: 10,
+            stime: 5,
+        };
         let u = calculate_cgroup_usage(&s, &s, &p, &p, 2);
         assert_eq!(u.total_pct, 0.0);
     }
@@ -648,11 +845,20 @@ mod tests {
     #[test]
     fn test_cgroup_usage_others_nonnegative() {
         let now = Instant::now();
-        let prev = CgroupCpuSample { usage_usec: 0, timestamp: now };
-        let curr = CgroupCpuSample { usage_usec: 500_000, timestamp: now + std::time::Duration::from_secs(1) };
+        let prev = CgroupCpuSample {
+            usage_usec: 0,
+            timestamp: now,
+        };
+        let curr = CgroupCpuSample {
+            usage_usec: 500_000,
+            timestamp: now + std::time::Duration::from_secs(1),
+        };
         let pp = ProcessCpuSample { utime: 0, stime: 0 };
         // self_delta > total: impossible in practice but test clamping
-        let cp = ProcessCpuSample { utime: 200, stime: 200 };
+        let cp = ProcessCpuSample {
+            utime: 200,
+            stime: 200,
+        };
         let u = calculate_cgroup_usage(&prev, &curr, &pp, &cp, 2);
         assert!(u.others_pct >= 0.0);
     }

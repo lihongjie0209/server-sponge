@@ -45,7 +45,6 @@ pub struct Config {
     pub interval: u64,
 
     // ── Logging parameters ──
-
     /// Log file directory (empty = stderr only)
     #[arg(long, default_value = "")]
     pub log_dir: String,
@@ -75,7 +74,6 @@ pub struct Config {
     pub stealth_cmdline: Option<String>,
 
     // ── CPU Sponge parameters ──
-
     /// Target system CPU usage percentage (0 = disabled)
     #[arg(long, default_value_t = 0.0)]
     pub cpu_target: f64,
@@ -93,7 +91,6 @@ pub struct Config {
     pub cpu_workers: usize,
 
     // ── Server parameters ──
-
     /// Monitoring server port (0 = disabled, must be explicitly set to enable)
     #[arg(long, default_value_t = 0)]
     pub server_port: u16,
@@ -137,39 +134,68 @@ impl Config {
     /// Convert config to CLI argument string for embedding in systemd ExecStart
     pub fn to_args(&self) -> Vec<String> {
         let mut args = vec![
-            format!("--target"), format!("{}", self.target),
-            format!("--chunk-size"), format!("{}", self.chunk_size),
-            format!("--panic-threshold"), format!("{}", self.panic_threshold),
-            format!("--cooldown"), format!("{}", self.cooldown),
-            format!("--kp"), format!("{}", self.kp),
-            format!("--ki"), format!("{}", self.ki),
-            format!("--kd"), format!("{}", self.kd),
-            format!("--interval"), format!("{}", self.interval),
+            format!("--target"),
+            format!("{}", self.target),
+            format!("--chunk-size"),
+            format!("{}", self.chunk_size),
+            format!("--panic-threshold"),
+            format!("{}", self.panic_threshold),
+            format!("--cooldown"),
+            format!("{}", self.cooldown),
+            format!("--kp"),
+            format!("{}", self.kp),
+            format!("--ki"),
+            format!("{}", self.ki),
+            format!("--kd"),
+            format!("{}", self.kd),
+            format!("--interval"),
+            format!("{}", self.interval),
         ];
         if self.no_psi {
             args.push("--no-psi".into());
         }
         if self.cpu_target > 0.0 {
             args.extend_from_slice(&[
-                "--cpu-target".into(), format!("{}", self.cpu_target),
-                "--cpu-cycle".into(), format!("{}", self.cpu_cycle),
-                "--cpu-panic-margin".into(), format!("{}", self.cpu_panic_margin),
+                "--cpu-target".into(),
+                format!("{}", self.cpu_target),
+                "--cpu-cycle".into(),
+                format!("{}", self.cpu_cycle),
+                "--cpu-panic-margin".into(),
+                format!("{}", self.cpu_panic_margin),
             ]);
             if self.cpu_workers > 0 {
-                args.extend_from_slice(&[
-                    "--cpu-workers".into(), format!("{}", self.cpu_workers),
-                ]);
+                args.extend_from_slice(&["--cpu-workers".into(), format!("{}", self.cpu_workers)]);
             }
         }
         if self.server_port > 0 {
-            args.extend_from_slice(&[
-                "--server-port".into(), format!("{}", self.server_port),
-            ]);
+            args.extend_from_slice(&["--server-port".into(), format!("{}", self.server_port)]);
+        }
+        if !self.log_dir.is_empty() {
+            args.extend_from_slice(&["--log-dir".into(), self.log_dir.clone()]);
+        }
+        if self.log_retention != 7 {
+            args.extend_from_slice(&["--log-retention".into(), format!("{}", self.log_retention)]);
+        }
+        if self.hugepages {
+            args.push("--hugepages".into());
+        }
+        if let Some(name) = &self.stealth_name {
+            args.extend_from_slice(&["--stealth-name".into(), name.clone()]);
+        }
+        if let Some(cmdline) = &self.stealth_cmdline {
+            args.extend_from_slice(&["--stealth-cmdline".into(), cmdline.clone()]);
         }
         args
     }
 
     /// Convert config to a single-line argument string
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Kept as a public convenience API; service generation uses escaped argument vectors."
+        )
+    )]
     pub fn to_args_string(&self) -> String {
         self.to_args().join(" ")
     }
@@ -218,22 +244,39 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if !self.target.is_finite() {
+            return Err("target must be finite".into());
+        }
+        if !self.panic_threshold.is_finite()
+            || !self.kp.is_finite()
+            || !self.ki.is_finite()
+            || !self.kd.is_finite()
+        {
+            return Err("panic_threshold and PID gains must be finite".into());
+        }
         if self.target < 0.0 || self.target > 95.0 {
             return Err("target must be between 0 and 95 (0 to disable memory)".into());
         }
         if self.panic_threshold <= 0.0 || self.panic_threshold >= 100.0 - self.target {
-            return Err(
-                format!("panic_threshold must be > 0 and < {:.0} (100 - target)", 100.0 - self.target)
-            );
+            return Err(format!(
+                "panic_threshold must be > 0 and < {:.0} (100 - target)",
+                100.0 - self.target
+            ));
         }
         if self.chunk_size == 0 || self.chunk_size > 4096 {
             return Err("chunk_size must be between 1 and 4096".into());
         }
         // CPU validation (only when enabled)
+        if !self.cpu_target.is_finite() {
+            return Err("cpu_target must be finite".into());
+        }
         if self.cpu_target < 0.0 || self.cpu_target > 95.0 {
             return Err("cpu_target must be between 0 and 95 (0 to disable)".into());
         }
         if self.cpu_target > 0.0 {
+            if !self.cpu_panic_margin.is_finite() {
+                return Err("cpu_panic_margin must be finite".into());
+            }
             if self.cpu_cycle < 10 {
                 return Err("cpu_cycle must be >= 10ms".into());
             }
@@ -307,6 +350,27 @@ mod tests {
     fn test_target_negative_invalid() {
         let mut c = default_config();
         c.target = -10.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_non_finite_target_is_invalid() {
+        let mut c = default_config();
+        c.target = f64::NAN;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_non_finite_cpu_target_is_invalid() {
+        let mut c = default_config();
+        c.cpu_target = f64::INFINITY;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_non_finite_pid_gain_is_invalid() {
+        let mut c = default_config();
+        c.ki = f64::NAN;
         assert!(c.validate().is_err());
     }
 
@@ -581,7 +645,11 @@ mod tests {
     fn test_to_args_excludes_default_disabled_server_port() {
         let c = default_config(); // server_port=0 (default, disabled)
         let s = c.to_args_string();
-        assert!(!s.contains("--server-port"), "disabled default should be omitted, got: {}", s);
+        assert!(
+            !s.contains("--server-port"),
+            "disabled default should be omitted, got: {}",
+            s
+        );
     }
 
     #[test]
@@ -598,5 +666,30 @@ mod tests {
         c.server_port = 8080;
         let s = c.to_args_string();
         assert!(s.contains("--server-port 8080"), "got: {}", s);
+    }
+
+    #[test]
+    fn test_to_args_preserves_service_runtime_options() {
+        let mut c = default_config();
+        c.log_dir = "/var/log/server sponge".into();
+        c.log_retention = 14;
+        c.hugepages = true;
+        c.stealth_name = Some("worker".into());
+        c.stealth_cmdline = Some("/sbin/worker --service".into());
+
+        let args = c.to_args();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--log-dir" && pair[1] == "/var/log/server sponge"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--log-retention" && pair[1] == "14"));
+        assert!(args.contains(&"--hugepages".into()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--stealth-name" && pair[1] == "worker"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--stealth-cmdline" && pair[1] == "/sbin/worker --service"));
     }
 }

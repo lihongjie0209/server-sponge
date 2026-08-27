@@ -8,14 +8,18 @@ const PAGE_SIZE: usize = 4096;
 const MADV_POPULATE_WRITE: libc::c_int = 23;
 
 /// A single allocated memory region.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Heap payload is owned for automatic release and is not otherwise inspected."
+    )
+)]
 enum Chunk {
     /// Heap-allocated via Vec<u8>
     Heap(Vec<u8>),
     /// mmap-allocated (used for HugePages)
-    Mmap {
-        ptr: *mut u8,
-        len: usize,
-    },
+    Mmap { ptr: *mut u8, len: usize },
 }
 
 // SAFETY: Chunk owns its memory exclusively; Send is safe.
@@ -53,7 +57,7 @@ impl Chunk {
         Self::Heap(v)
     }
 
-    /// Return the total usable size
+    #[cfg(test)]
     fn len(&self) -> usize {
         match self {
             Chunk::Heap(v) => v.len(),
@@ -95,12 +99,11 @@ fn activate_pages(ptr: *mut u8, len: usize) {
         }
         offset += PAGE_SIZE;
     }
-    debug!("Activated {} bytes via write loop ({} pages)", len, len / PAGE_SIZE);
-}
-
-/// Activate pages in a Vec<u8>
-fn activate_vec(v: &mut Vec<u8>) {
-    activate_pages(v.as_mut_ptr(), v.len());
+    debug!(
+        "Activated {} bytes via write loop ({} pages)",
+        len,
+        len / PAGE_SIZE
+    );
 }
 
 /// A pool of memory chunks that are physically backed (RSS).
@@ -214,7 +217,7 @@ fn trim_memory() {
 pub fn auto_chunk_size_mb(total_mb: u64) -> usize {
     // Target: each chunk is ~1% of total memory, but keep it reasonable
     let auto = (total_mb as f64 * 0.01).round() as usize;
-    auto.max(4).min(256)
+    auto.clamp(4, 256)
 }
 
 #[cfg(test)]

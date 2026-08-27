@@ -18,6 +18,7 @@ use crate::metrics::MetricsStore;
 use crate::stress::StressManager;
 
 static DASHBOARD_HTML: &str = include_str!("dashboard.html");
+const SERVER_BIND_HOST: &str = "127.0.0.1";
 
 struct AppState {
     metrics: MetricsStore,
@@ -60,7 +61,7 @@ pub fn start_server(
                     .route("/api/stress/stop", post(stop_all_handler))
                     .with_state(state);
 
-                let addr = format!("0.0.0.0:{}", port);
+                let addr = format!("{}:{}", SERVER_BIND_HOST, port);
                 let listener = match tokio::net::TcpListener::bind(&addr).await {
                     Ok(l) => l,
                     Err(e) => {
@@ -69,7 +70,7 @@ pub fn start_server(
                     }
                 };
 
-                info!("📊 监控面板已启动: http://0.0.0.0:{}", port);
+                info!("📊 监控面板已启动: http://{}:{}", SERVER_BIND_HOST, port);
 
                 let shutdown = async move {
                     while running.load(std::sync::atomic::Ordering::Relaxed) {
@@ -148,8 +149,8 @@ async fn start_cpu_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CpuStressReq>,
 ) -> impl IntoResponse {
-    let workers = req.workers.unwrap_or(1).max(1).min(64);
-    let load = req.load.unwrap_or(80).max(1).min(100);
+    let workers = req.workers.unwrap_or(1).clamp(1, 64);
+    let load = req.load.unwrap_or(80).clamp(1, 100);
     let timeout = req.timeout.unwrap_or(0);
     if let Ok(mut s) = state.stress.lock() {
         s.start_cpu(workers, load, timeout);
@@ -168,7 +169,7 @@ async fn start_mem_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<MemStressReq>,
 ) -> impl IntoResponse {
-    let mb = req.mb.unwrap_or(100).max(1).min(10000);
+    let mb = req.mb.unwrap_or(100).clamp(1, 10000);
     let timeout = req.timeout.unwrap_or(0);
     if let Ok(mut s) = state.stress.lock() {
         s.start_mem(mb, timeout);
@@ -208,5 +209,10 @@ mod tests {
     #[test]
     fn test_dashboard_contains_stress_endpoints() {
         assert!(DASHBOARD_HTML.contains("/api/stress"));
+    }
+
+    #[test]
+    fn test_server_binds_to_loopback_by_default() {
+        assert_eq!(SERVER_BIND_HOST, "127.0.0.1");
     }
 }

@@ -53,8 +53,6 @@ pub struct MetricsSnapshot {
     pub cpu_target: f64,
 }
 
-const MAX_EVENTS: usize = 200;
-
 struct Inner {
     start_time: u64,
     memory: MemoryMetrics,

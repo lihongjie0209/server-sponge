@@ -21,12 +21,19 @@ pub fn install(config: &Config, bin_path: &str, start: bool) -> io::Result<()> {
 
     // 1. Copy binary to target path
     let current_exe = std::env::current_exe()?;
-    let target = if bin_path.is_empty() { DEFAULT_BIN_PATH } else { bin_path };
+    let target = if bin_path.is_empty() {
+        DEFAULT_BIN_PATH
+    } else {
+        bin_path
+    };
 
     // Skip copy if source and destination are the same file
     let src_canonical = fs::canonicalize(&current_exe)?;
     let dst_exists = Path::new(target).exists();
-    let same_file = dst_exists && fs::canonicalize(target).map(|d| d == src_canonical).unwrap_or(false);
+    let same_file = dst_exists
+        && fs::canonicalize(target)
+            .map(|d| d == src_canonical)
+            .unwrap_or(false);
 
     if same_file {
         println!("📦 Binary already at {}, skipping copy", target);
@@ -117,7 +124,13 @@ pub fn uninstall() -> io::Result<()> {
 }
 
 fn generate_service_file(config: &Config, bin_path: &str) -> String {
-    let args_str = config.to_args_string();
+    let args_str = config
+        .to_args()
+        .iter()
+        .map(|arg| quote_systemd_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let bin_path = quote_systemd_arg(bin_path);
     let cpu_caps = if config.cpu_target > 0.0 {
         "\nAmbientCapabilities=CAP_SYS_NICE"
     } else {
@@ -149,6 +162,17 @@ WantedBy=multi-user.target
     )
 }
 
+fn quote_systemd_arg(arg: &str) -> String {
+    if arg
+        .chars()
+        .any(|character| character.is_whitespace() || matches!(character, '"' | '\\'))
+    {
+        format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        arg.to_string()
+    }
+}
+
 fn is_root() -> bool {
     #[cfg(unix)]
     {
@@ -164,10 +188,12 @@ fn run_cmd(cmd: &str, args: &[&str]) -> io::Result<()> {
     let output = Command::new(cmd).args(args).output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("{} {} failed: {}", cmd, args.join(" "), stderr.trim()),
-        ));
+        return Err(io::Error::other(format!(
+            "{} {} failed: {}",
+            cmd,
+            args.join(" "),
+            stderr.trim()
+        )));
     }
     Ok(())
 }
@@ -258,6 +284,15 @@ mod tests {
         let config = default_config();
         let content = generate_service_file(&config, "/opt/sponge/server-sponge");
         assert!(content.contains("ExecStart=/opt/sponge/server-sponge run"));
+    }
+
+    #[test]
+    fn test_generate_service_file_quotes_arguments_with_spaces() {
+        let mut config = default_config();
+        config.log_dir = "/var/log/server sponge".into();
+        let content = generate_service_file(&config, "/opt/server sponge/server-sponge");
+        assert!(content.contains("ExecStart=\"/opt/server sponge/server-sponge\" run"));
+        assert!(content.contains("--log-dir \"/var/log/server sponge\""));
     }
 
     #[test]

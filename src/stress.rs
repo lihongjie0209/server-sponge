@@ -33,8 +33,8 @@ impl StressManager {
     /// `timeout`: auto-stop after N seconds (0 = no timeout).
     pub fn start_cpu(&mut self, workers: usize, load_pct: usize, timeout: usize) {
         self.stop_cpu();
-        let workers = workers.max(1).min(64);
-        let load = load_pct.max(1).min(100);
+        let workers = workers.clamp(1, 64);
+        let load = load_pct.clamp(1, 100);
 
         let mut cmd = Command::new("stress-ng");
         cmd.args(["--cpu", &workers.to_string()])
@@ -58,7 +58,10 @@ impl StressManager {
                 self.publish_status();
             }
             Err(e) => {
-                warn!("压力模拟: 启动 stress-ng 失败: {} (是否已安装 stress-ng?)", e);
+                warn!(
+                    "压力模拟: 启动 stress-ng 失败: {} (是否已安装 stress-ng?)",
+                    e
+                );
             }
         }
     }
@@ -80,7 +83,7 @@ impl StressManager {
     /// `timeout`: auto-stop after N seconds (0 = no timeout).
     pub fn start_mem(&mut self, mb: usize, timeout: usize) {
         self.stop_mem();
-        let mb = mb.max(1).min(10000);
+        let mb = mb.clamp(1, 10000);
 
         let mut cmd = Command::new("stress-ng");
         cmd.args(["--vm", "1"])
@@ -103,7 +106,10 @@ impl StressManager {
                 self.publish_status();
             }
             Err(e) => {
-                warn!("压力模拟: 启动 stress-ng 失败: {} (是否已安装 stress-ng?)", e);
+                warn!(
+                    "压力模拟: 启动 stress-ng 失败: {} (是否已安装 stress-ng?)",
+                    e
+                );
             }
         }
     }
@@ -228,10 +234,7 @@ mod tests {
         use std::time::Duration;
 
         fn has_stress_ng() -> bool {
-            Command::new("stress-ng")
-                .arg("--version")
-                .output()
-                .is_ok()
+            Command::new("stress-ng").arg("--version").output().is_ok()
         }
 
         #[test]

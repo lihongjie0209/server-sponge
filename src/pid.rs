@@ -6,6 +6,13 @@ pub struct PidOutput {
     pub p_term: f64,
     pub i_term: f64,
     pub d_term: f64,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Exposed for diagnostics and unit-test inspection."
+        )
+    )]
     pub integral_acc: f64,
     pub raw_output: f64,
     pub clamped_output: f64,
@@ -24,7 +31,11 @@ impl std::fmt::Display for PidOutput {
             self.d_term,
             self.raw_output,
             self.clamped_output,
-            if self.anti_windup_active { " [anti-windup]" } else { "" }
+            if self.anti_windup_active {
+                " [anti-windup]"
+            } else {
+                ""
+            }
         )
     }
 }
@@ -245,7 +256,11 @@ mod tests {
             pid.update(100.0, false);
         }
         let out = pid.update(0.0, false);
-        assert!(out.integral_acc <= 10.0, "integral_acc={}", out.integral_acc);
+        assert!(
+            out.integral_acc <= 10.0,
+            "integral_acc={}",
+            out.integral_acc
+        );
     }
 
     #[test]
@@ -290,7 +305,10 @@ mod tests {
         let mut pid = PidController::new(0.0, 0.0, 5.0, 1000.0);
         pid.update(7.0, false);
         let out = pid.update(7.0, false);
-        assert!((out.d_term).abs() < 0.01, "Constant error => zero derivative");
+        assert!(
+            (out.d_term).abs() < 0.01,
+            "Constant error => zero derivative"
+        );
     }
 
     // ── Anti-windup tests ──
@@ -324,7 +342,11 @@ mod tests {
         }
         // Integral should be ~0 because anti-windup blocked accumulation
         let out = pid.update(0.0, true);
-        assert!(out.integral_acc.abs() < 0.01, "integral should not drift: {}", out.integral_acc);
+        assert!(
+            out.integral_acc.abs() < 0.01,
+            "integral should not drift: {}",
+            out.integral_acc
+        );
     }
 
     // ── Full reset test ──
@@ -369,7 +391,11 @@ mod tests {
             simulated_value += out.clamped_output * 0.5; // simulate response
         }
         // Should converge near target
-        assert!((simulated_value - target).abs() < 5.0, "value={}", simulated_value);
+        assert!(
+            (simulated_value - target).abs() < 5.0,
+            "value={}",
+            simulated_value
+        );
     }
 
     #[test]

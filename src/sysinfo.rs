@@ -65,19 +65,30 @@ fn get_cgroup_v2_memory() -> io::Result<MemInfo> {
     let max_str = max_str.trim();
     // "max" means no limit — fall through to /proc/meminfo
     if max_str == "max" {
-        return Err(io::Error::new(io::ErrorKind::Other, "cgroup v2: no memory limit set"));
+        return Err(io::Error::other("cgroup v2: no memory limit set"));
     }
-    let total: u64 = max_str
-        .parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse memory.max: {}", e)))?;
+    let total: u64 = max_str.parse().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("parse memory.max: {}", e),
+        )
+    })?;
 
     let current: u64 = fs::read_to_string("/sys/fs/cgroup/memory.current")?
         .trim()
         .parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse memory.current: {}", e)))?;
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("parse memory.current: {}", e),
+            )
+        })?;
 
     let available = total.saturating_sub(current);
-    debug!("cgroup v2: total={}, current={}, available={}", total, current, available);
+    debug!(
+        "cgroup v2: total={}, current={}, available={}",
+        total, current, available
+    );
 
     // Read swap from cgroup if available
     let (swap_total, swap_free) = read_cgroup_v2_swap(total);
@@ -97,7 +108,11 @@ fn read_cgroup_v2_swap(mem_max: u64) -> (u64, u64) {
         .ok()
         .and_then(|s| {
             let s = s.trim();
-            if s == "max" { None } else { s.parse::<u64>().ok() }
+            if s == "max" {
+                None
+            } else {
+                s.parse::<u64>().ok()
+            }
         })
         .unwrap_or(0);
     let swap_current = fs::read_to_string("/sys/fs/cgroup/memory.swap.current")
@@ -113,20 +128,27 @@ fn get_cgroup_v1_memory() -> io::Result<MemInfo> {
     let limit: u64 = fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes")?
         .trim()
         .parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse v1 limit: {}", e)))?;
+        .map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("parse v1 limit: {}", e))
+        })?;
 
     // Very large values (near u64::MAX / page-aligned) mean "no limit"
     if limit > (1u64 << 62) {
-        return Err(io::Error::new(io::ErrorKind::Other, "cgroup v1: no memory limit set"));
+        return Err(io::Error::other("cgroup v1: no memory limit set"));
     }
 
     let usage: u64 = fs::read_to_string("/sys/fs/cgroup/memory/memory.usage_in_bytes")?
         .trim()
         .parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse v1 usage: {}", e)))?;
+        .map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("parse v1 usage: {}", e))
+        })?;
 
     let available = limit.saturating_sub(usage);
-    debug!("cgroup v1: limit={}, usage={}, available={}", limit, usage, available);
+    debug!(
+        "cgroup v1: limit={}, usage={}, available={}",
+        limit, usage, available
+    );
 
     Ok(MemInfo {
         total: limit,
@@ -168,8 +190,10 @@ fn parse_meminfo(content: &str) -> io::Result<MemInfo> {
     }
 
     Ok(MemInfo {
-        total: total.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "MemTotal not found"))?,
-        available: available.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "MemAvailable not found"))?,
+        total: total
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "MemTotal not found"))?,
+        available: available
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "MemAvailable not found"))?,
         swap_total: swap_total.unwrap_or(0),
         swap_free: swap_free.unwrap_or(0),
         is_cgroup: false,
@@ -287,7 +311,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_usage_percent_50() {
         let info = MemInfo {
-            total: 1000, available: 500, swap_total: 0, swap_free: 0, is_cgroup: false,
+            total: 1000,
+            available: 500,
+            swap_total: 0,
+            swap_free: 0,
+            is_cgroup: false,
         };
         assert!((info.usage_percent() - 50.0).abs() < 0.01);
     }
@@ -295,7 +323,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_usage_percent_100() {
         let info = MemInfo {
-            total: 1000, available: 0, swap_total: 0, swap_free: 0, is_cgroup: false,
+            total: 1000,
+            available: 0,
+            swap_total: 0,
+            swap_free: 0,
+            is_cgroup: false,
         };
         assert!((info.usage_percent() - 100.0).abs() < 0.01);
     }
@@ -303,7 +335,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_usage_percent_0() {
         let info = MemInfo {
-            total: 1000, available: 1000, swap_total: 0, swap_free: 0, is_cgroup: false,
+            total: 1000,
+            available: 1000,
+            swap_total: 0,
+            swap_free: 0,
+            is_cgroup: false,
         };
         assert!((info.usage_percent()).abs() < 0.01);
     }
@@ -311,7 +347,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_usage_percent_zero_total() {
         let info = MemInfo {
-            total: 0, available: 0, swap_total: 0, swap_free: 0, is_cgroup: false,
+            total: 0,
+            available: 0,
+            swap_total: 0,
+            swap_free: 0,
+            is_cgroup: false,
         };
         assert_eq!(info.usage_percent(), 0.0);
     }
@@ -319,7 +359,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_available_percent() {
         let info = MemInfo {
-            total: 1000, available: 300, swap_total: 0, swap_free: 0, is_cgroup: false,
+            total: 1000,
+            available: 300,
+            swap_total: 0,
+            swap_free: 0,
+            is_cgroup: false,
         };
         assert!((info.available_percent() - 30.0).abs() < 0.01);
     }
@@ -327,7 +371,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_available_percent_zero_total() {
         let info = MemInfo {
-            total: 0, available: 0, swap_total: 0, swap_free: 0, is_cgroup: false,
+            total: 0,
+            available: 0,
+            swap_total: 0,
+            swap_free: 0,
+            is_cgroup: false,
         };
         assert_eq!(info.available_percent(), 100.0);
     }
@@ -335,7 +383,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_swap_in_use_false_when_equal() {
         let info = MemInfo {
-            total: 1000, available: 500, swap_total: 2000, swap_free: 2000, is_cgroup: false,
+            total: 1000,
+            available: 500,
+            swap_total: 2000,
+            swap_free: 2000,
+            is_cgroup: false,
         };
         assert!(!info.swap_in_use());
     }
@@ -343,7 +395,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_swap_in_use_false_when_no_swap() {
         let info = MemInfo {
-            total: 1000, available: 500, swap_total: 0, swap_free: 0, is_cgroup: false,
+            total: 1000,
+            available: 500,
+            swap_total: 0,
+            swap_free: 0,
+            is_cgroup: false,
         };
         assert!(!info.swap_in_use());
     }
@@ -351,7 +407,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_swap_in_use_true() {
         let info = MemInfo {
-            total: 1000, available: 500, swap_total: 2000, swap_free: 1000, is_cgroup: false,
+            total: 1000,
+            available: 500,
+            swap_total: 2000,
+            swap_free: 1000,
+            is_cgroup: false,
         };
         assert!(info.swap_in_use());
         assert!((info.swap_usage_percent() - 50.0).abs() < 0.01);
@@ -360,7 +420,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_swap_usage_percent_no_swap() {
         let info = MemInfo {
-            total: 1000, available: 500, swap_total: 0, swap_free: 0, is_cgroup: false,
+            total: 1000,
+            available: 500,
+            swap_total: 0,
+            swap_free: 0,
+            is_cgroup: false,
         };
         assert_eq!(info.swap_usage_percent(), 0.0);
     }
@@ -370,7 +434,11 @@ SwapFree:        1000000 kB
     #[test]
     fn test_usage_plus_available_is_100() {
         let info = MemInfo {
-            total: 8192, available: 3000, swap_total: 0, swap_free: 0, is_cgroup: false,
+            total: 8192,
+            available: 3000,
+            swap_total: 0,
+            swap_free: 0,
+            is_cgroup: false,
         };
         let sum = info.usage_percent() + info.available_percent();
         assert!((sum - 100.0).abs() < 0.01, "sum={}", sum);

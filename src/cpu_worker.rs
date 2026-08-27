@@ -33,7 +33,7 @@ impl CpuController {
 
         // Shared duty cycle (0.0–1.0), encoded as AtomicU64 via f64::to_bits
         let duty = Arc::new(AtomicU64::new(0.0f64.to_bits()));
-        let cycle_ns = (config.cpu_cycle as u64) * 1_000_000;
+        let cycle_ns = config.cpu_cycle * 1_000_000;
 
         // Spawn worker threads
         let mut worker_handles = Vec::with_capacity(num_cpus);
@@ -101,7 +101,9 @@ fn busy_work(duration: Duration) {
     loop {
         // Batch iterations to amortise the cost of Instant::now()
         for _ in 0..1000 {
-            acc = acc.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            acc = acc
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
         }
         std::hint::black_box(acc);
         if start.elapsed() >= duration {
@@ -167,7 +169,9 @@ fn control_loop(
         let scale = cpu_stat::cgroup_cpu_scale();
         info!(
             "CPU measurement: /proc/stat (scale={:.2}x, host_cpus={}, cgroup_cpus={})",
-            scale, cpu_stat::count_online_cpus(), cgroup_cpus,
+            scale,
+            cpu_stat::count_online_cpus(),
+            cgroup_cpus,
         );
     }
 
@@ -186,7 +190,13 @@ fn control_loop(
         // Calculate CPU usage using the best available source
         let usage = if use_cgroup {
             if let (Some(ref prev), Some(curr)) = (&prev_cg, cpu_stat::read_cgroup_cpu_usage()) {
-                let u = cpu_stat::calculate_cgroup_usage(prev, &curr, &prev_proc, &curr_proc, cgroup_cpus);
+                let u = cpu_stat::calculate_cgroup_usage(
+                    prev,
+                    &curr,
+                    &prev_proc,
+                    &curr_proc,
+                    cgroup_cpus,
+                );
                 prev_cg = Some(curr);
                 u
             } else {
@@ -212,7 +222,7 @@ fn control_loop(
         };
 
         let current_duty = f64::from_bits(duty.load(Ordering::Relaxed));
-        let should_debug_log = cycle_count % log_interval == 0;
+        let should_debug_log = cycle_count.is_multiple_of(log_interval);
         let should_info_log = last_info_time.elapsed() >= Duration::from_secs(1);
 
         if should_debug_log {
@@ -250,7 +260,10 @@ fn control_loop(
             if should_debug_log {
                 debug!(
                     "[CPU #{:>5}]    PID: {} | duty_delta={:+.3} → new_duty={:.1}%",
-                    cycle_count, pid_out, duty_delta, new_duty * 100.0,
+                    cycle_count,
+                    pid_out,
+                    duty_delta,
+                    new_duty * 100.0,
                 );
             }
         }
