@@ -93,6 +93,9 @@ sudo ./target/release/server-sponge install \
     --cpu-target 70 \
     --start
 
+# 如需将服务日志输出到 journalctl，显式添加 --journal
+sudo ./target/release/server-sponge install --target 70 --journal --start
+
 # 仅安装，不启动
 sudo ./target/release/server-sponge install --target 80 --no-psi
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3] - 2026-08-28
+
+### Changed
+
+- `install` no longer sends service stdout/stderr to `journalctl` by default.
+- Add `install --journal` to explicitly enable systemd journal output.
+
 ## [0.6.2] - 2026-08-27
 
 ### Security

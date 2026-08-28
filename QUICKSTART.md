@@ -83,6 +83,12 @@ nohup server-sponge run --target 70 --cpu-target 50 &
 sudo server-sponge install --target 70 --cpu-target 50 --start
 ```
 
+安装的 systemd 服务默认丢弃 stdout/stderr，不写入 `journalctl`；需要查看 journal 时显式添加 `--journal`：
+
+```bash
+sudo server-sponge install --target 70 --cpu-target 50 --journal --start
+```
+
 ---
 
 ## 安装为系统服务

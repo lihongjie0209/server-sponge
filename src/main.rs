@@ -52,6 +52,10 @@ enum Commands {
         /// 安装后立即启动服务
         #[arg(long)]
         start: bool,
+
+        /// 将服务 stdout/stderr 输出到 systemd journal（默认丢弃）
+        #[arg(long)]
+        journal: bool,
     },
 
     /// 卸载 systemd 服务（需要 root 权限）
@@ -123,12 +127,13 @@ fn main() {
             config,
             bin_path,
             start,
+            journal,
         } => {
             if let Err(e) = config.validate() {
                 eprintln!("配置校验失败: {}", e);
                 std::process::exit(1);
             }
-            if let Err(e) = install::install(&config, &bin_path, start) {
+            if let Err(e) = install::install(&config, &bin_path, start, journal) {
                 error!("安装失败: {}", e);
                 std::process::exit(1);
             }

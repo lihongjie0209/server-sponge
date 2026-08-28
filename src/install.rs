@@ -10,7 +10,7 @@ const SERVICE_PATH: &str = "/etc/systemd/system/server-sponge.service";
 const DEFAULT_BIN_PATH: &str = "/usr/local/bin/server-sponge";
 
 /// Install server-sponge as a systemd service
-pub fn install(config: &Config, bin_path: &str, start: bool) -> io::Result<()> {
+pub fn install(config: &Config, bin_path: &str, start: bool, journal: bool) -> io::Result<()> {
     // Must run as root
     if !is_root() {
         return Err(io::Error::new(
@@ -52,7 +52,7 @@ pub fn install(config: &Config, bin_path: &str, start: bool) -> io::Result<()> {
     }
 
     // 2. Generate and write service file
-    let service_content = generate_service_file(config, target);
+    let service_content = generate_service_file_with_journal(config, target, journal);
     println!("📝 Writing service file: {}", SERVICE_PATH);
     fs::write(SERVICE_PATH, &service_content)?;
     println!("   Service configuration:");
@@ -123,7 +123,18 @@ pub fn uninstall() -> io::Result<()> {
     Ok(())
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Convenience wrapper retained for unit tests and defaults to disabled journal output."
+    )
+)]
 fn generate_service_file(config: &Config, bin_path: &str) -> String {
+    generate_service_file_with_journal(config, bin_path, false)
+}
+
+fn generate_service_file_with_journal(config: &Config, bin_path: &str, journal: bool) -> String {
     let args_str = config
         .to_args()
         .iter()
@@ -135,6 +146,11 @@ fn generate_service_file(config: &Config, bin_path: &str) -> String {
         "\nAmbientCapabilities=CAP_SYS_NICE"
     } else {
         ""
+    };
+    let output = if journal {
+        "StandardOutput=journal\nStandardError=journal"
+    } else {
+        "StandardOutput=null\nStandardError=null"
     };
     format!(
         r#"[Unit]
@@ -149,6 +165,7 @@ RestartSec=5
 Nice=10
 LimitMEMLOCK=infinity
 Environment=RUST_LOG=info{cpu_caps}
+{output}
 
 # OOM killer should prefer killing sponge over real services
 OOMScoreAdjust=800
@@ -159,6 +176,7 @@ WantedBy=multi-user.target
         bin_path = bin_path,
         args = args_str,
         cpu_caps = cpu_caps,
+        output = output,
     )
 }
 
@@ -293,6 +311,25 @@ mod tests {
         let content = generate_service_file(&config, "/opt/server sponge/server-sponge");
         assert!(content.contains("ExecStart=\"/opt/server sponge/server-sponge\" run"));
         assert!(content.contains("--log-dir \"/var/log/server sponge\""));
+    }
+
+    #[test]
+    fn test_generate_service_file_discards_journal_output_by_default() {
+        let config = default_config();
+        let content = generate_service_file(&config, "/usr/local/bin/server-sponge");
+        assert!(content.contains("StandardOutput=null"));
+        assert!(content.contains("StandardError=null"));
+        assert!(!content.contains("StandardOutput=journal"));
+    }
+
+    #[test]
+    fn test_generate_service_file_enables_journal_output_when_requested() {
+        let config = default_config();
+        let content =
+            generate_service_file_with_journal(&config, "/usr/local/bin/server-sponge", true);
+        assert!(content.contains("StandardOutput=journal"));
+        assert!(content.contains("StandardError=journal"));
+        assert!(!content.contains("StandardOutput=null"));
     }
 
     #[test]
